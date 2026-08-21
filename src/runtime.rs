@@ -949,6 +949,15 @@ mod tests {
             registry.try_lock().is_ok(),
             "engine feed held the session registry"
         );
+        let (status_send, status_receive) = mpsc::channel();
+        let status_registry = registry.clone();
+        std::thread::spawn(move || status_send.send(status_snapshot(&status_registry)).unwrap());
+        assert!(
+            status_receive
+                .recv_timeout(Duration::from_millis(100))
+                .is_ok(),
+            "status waited for a busy engine mirror"
+        );
         release_send.send(()).unwrap();
         assert!(applying.join().unwrap());
     }
