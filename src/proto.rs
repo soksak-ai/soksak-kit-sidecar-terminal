@@ -1,7 +1,7 @@
 //! Local wire facts used by this unit.
 //!
-//! The PTY and terminal-state units each own one identity-scoped socket. Both speak the shared
-//! control envelope before a connection becomes a byte stream. Paths name installed units; the
+//! The PTY and terminal-state sidecars each own one identity-scoped socket. Both speak the shared
+//! control envelope before a connection becomes a byte stream. Paths name installed sidecars; the
 //! contract id is not a process identity.
 
 use std::path::{Path, PathBuf};
@@ -26,8 +26,8 @@ pub fn pty_token_path(runtime_root: &Path) -> PathBuf {
     runtime_root.join(format!("{PTY_UNIT_NAME}-p{PTY_PROTOCOL_VERSION}.token"))
 }
 
-pub fn service_socket_path(runtime_root: &Path, unit_name: &str) -> PathBuf {
-    runtime_root.join(format!("{unit_name}-p1.sock"))
+pub fn service_socket_path(runtime_root: &Path, sidecar_id: &str) -> PathBuf {
+    runtime_root.join(format!("{sidecar_id}-p1.sock"))
 }
 
 pub fn hello(id: &str, token: &str) -> Value {
@@ -61,7 +61,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoints_name_the_installed_units() {
+    fn endpoints_name_the_installed_sidecars() {
         let runtime = Path::new("/runtime");
         assert_eq!(
             pty_socket_path(runtime),

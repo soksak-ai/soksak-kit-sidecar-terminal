@@ -57,7 +57,7 @@ fn status_snapshot(registry: &Registry) -> Value {
 #[derive(Clone)]
 pub struct Runtime {
     runtime_root: PathBuf,
-    unit_name: &'static str,
+    sidecar_id: &'static str,
     factory: MirrorFactory,
     registry: Registry,
     control: Arc<Mutex<ControlClient>>,
@@ -69,21 +69,21 @@ impl Runtime {
     pub fn connect(
         home: PathBuf,
         runtime_root: PathBuf,
-        unit_name: &'static str,
+        sidecar_id: &'static str,
         factory: MirrorFactory,
     ) -> io::Result<Self> {
         let control = ControlClient::connect(&runtime_root)?;
         let checkpoints = match std::env::var(KEY_ENV) {
             Ok(encoded) if !encoded.is_empty() => Some(Arc::new(CheckpointStore::new(
                 &home,
-                unit_name,
+                sidecar_id,
                 key_from_base64(&encoded)?,
             )?)),
             _ => None,
         };
         Ok(Self {
             runtime_root,
-            unit_name,
+            sidecar_id,
             factory,
             registry: Arc::new(Mutex::new(HashMap::new())),
             control: Arc::new(Mutex::new(control)),
@@ -186,7 +186,7 @@ impl Runtime {
                 .control
                 .lock()
                 .unwrap()
-                .prepare_observer(&window, &pane, self.unit_name)
+                .prepare_observer(&window, &pane, self.sidecar_id)
             {
                 Ok(token) => token,
                 Err(error) => return result_error("OBSERVER_PREPARE_FAILED", &error.to_string()),
@@ -248,7 +248,7 @@ impl Runtime {
     ) {
         let registry = self.registry.clone();
         let checkpoint = self.checkpoints.as_ref().map(|store| {
-            start_checkpoint_worker(store.clone(), self.unit_name, key.clone(), mirror.clone())
+            start_checkpoint_worker(store.clone(), self.sidecar_id, key.clone(), mirror.clone())
         });
         std::thread::spawn(move || {
             consume_observations(observation, mirror, registry, key, checkpoint)
@@ -443,7 +443,7 @@ impl Runtime {
             let token = token.clone();
             std::thread::spawn(move || {
                 if let Err(error) = serve_connection(connection, &runtime, &token) {
-                    eprintln!("{}: service connection failed: {error}", runtime.unit_name);
+                    eprintln!("{}: service connection failed: {error}", runtime.sidecar_id);
                 }
             });
         }
@@ -566,13 +566,13 @@ enum CheckpointEvent {
 
 fn start_checkpoint_worker(
     store: Arc<CheckpointStore>,
-    unit_name: &'static str,
+    sidecar_id: &'static str,
     key: PaneKey,
     mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
 ) -> Sender<CheckpointEvent> {
     let (send, receive) = mpsc::channel();
     std::thread::Builder::new()
-        .name(format!("{unit_name}-checkpoint"))
+        .name(format!("{sidecar_id}-checkpoint"))
         .spawn(move || checkpoint_worker(store, key, mirror, receive))
         .expect("checkpoint worker thread");
     send
@@ -656,7 +656,7 @@ fn serve_connection(connection: Stream, runtime: &Runtime, token: &str) -> io::R
                     id,
                     json!({
                         "protocol": proto::CONTROL_PROTOCOL,
-                        "identity": runtime.unit_name,
+                        "identity": runtime.sidecar_id,
                     "commands": { "commands": [
                         { "name": "terminal.prepareSession", "owner": "plugin" },
                             { "name": "terminal.ensureSession", "owner": "plugin" },
@@ -717,8 +717,8 @@ fn envelope_error(id: &str, code: &str, message: &str) -> Value {
     json!({ "id": id, "ok": false, "error": message, "result": { "code": code, "data": null } })
 }
 
-pub fn bind_service(home: &Path, unit_name: &str) -> io::Result<Listener> {
-    let path = proto::service_socket_path(home, unit_name);
+pub fn bind_service(home: &Path, sidecar_id: &str) -> io::Result<Listener> {
+    let path = proto::service_socket_path(home, sidecar_id);
     if let Some(directory) = path.parent() {
         std::fs::create_dir_all(directory)?;
     }
@@ -726,24 +726,24 @@ pub fn bind_service(home: &Path, unit_name: &str) -> io::Result<Listener> {
     ListenerOptions::new().name(name).create_sync()
 }
 
-pub fn service_token_path(runtime_root: &Path, unit_name: &str) -> PathBuf {
-    runtime_root.join(format!("{unit_name}-p1.token"))
+pub fn service_token_path(runtime_root: &Path, sidecar_id: &str) -> PathBuf {
+    runtime_root.join(format!("{sidecar_id}-p1.token"))
 }
 
 pub fn run_service(
-    unit_name: &'static str,
+    sidecar_id: &'static str,
     factory: MirrorFactory,
     arguments: impl IntoIterator<Item = String>,
 ) -> io::Result<()> {
     let (home, runtime_root) = parse_roots(arguments)?;
-    let runtime = Runtime::connect(home, runtime_root.clone(), unit_name, factory)?;
-    let listener = bind_service(&runtime_root, unit_name)?;
-    let token = load_or_create_token(&runtime_root, unit_name)?;
+    let runtime = Runtime::connect(home, runtime_root.clone(), sidecar_id, factory)?;
+    let listener = bind_service(&runtime_root, sidecar_id)?;
+    let token = load_or_create_token(&runtime_root, sidecar_id)?;
     println!(
         "{}",
         json!({
             "protocol": proto::CONTROL_PROTOCOL,
-            "socket": proto::service_socket_path(&runtime_root, unit_name),
+            "socket": proto::service_socket_path(&runtime_root, sidecar_id),
             "token": token,
         })
     );
@@ -780,8 +780,8 @@ fn parse_roots(arguments: impl IntoIterator<Item = String>) -> io::Result<(PathB
     Ok((home, runtime_root))
 }
 
-fn load_or_create_token(home: &Path, unit_name: &str) -> io::Result<String> {
-    let path = service_token_path(home, unit_name);
+fn load_or_create_token(home: &Path, sidecar_id: &str) -> io::Result<String> {
+    let path = service_token_path(home, sidecar_id);
     if let Ok(token) = std::fs::read_to_string(&path) {
         let token = token.trim().to_string();
         if !token.is_empty() {
@@ -813,8 +813,8 @@ pub struct ServiceClient {
 }
 
 impl ServiceClient {
-    pub fn connect(home: &Path, unit_name: &str, token: &str) -> io::Result<Self> {
-        let path = proto::service_socket_path(home, unit_name);
+    pub fn connect(home: &Path, sidecar_id: &str, token: &str) -> io::Result<Self> {
+        let path = proto::service_socket_path(home, sidecar_id);
         let name = path.as_os_str().to_fs_name::<GenericFilePath>()?;
         let (recv, send) = Stream::connect(name)?.split();
         let mut client = Self {
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_endpoints_are_independent() {
+    fn sidecar_endpoints_are_independent() {
         let home = Path::new("/identity");
         assert_ne!(
             proto::service_socket_path(home, "soksak-sidecar-terminal-vt100"),

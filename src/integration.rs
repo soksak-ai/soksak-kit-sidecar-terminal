@@ -58,7 +58,7 @@ impl Drop for Process {
     }
 }
 
-pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, unit_name: &'static str) {
+pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, sidecar_id: &'static str) {
     let home = fresh_home();
     let runtime_root = fresh_runtime();
     let mut pty_command = Command::new(pty_binary);
@@ -85,7 +85,7 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, unit_name: 
     let announcement = service.announcement();
     assert_eq!(announcement["protocol"], proto::CONTROL_PROTOCOL);
     let token = announcement["token"].as_str().unwrap();
-    let mut client = ServiceClient::connect(&runtime_root, unit_name, token).unwrap();
+    let mut client = ServiceClient::connect(&runtime_root, sidecar_id, token).unwrap();
     let window = "win-integration";
     let pane = "tab-integration";
     let prepared = response_data(
@@ -175,7 +175,7 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, unit_name: 
     assert!(archived_paint
         .windows(CHECKPOINT_MARKER.len())
         .any(|value| value == CHECKPOINT_MARKER.as_bytes()));
-    let checkpoint_dir = home.join("terminal-checkpoints").join(unit_name);
+    let checkpoint_dir = home.join("terminal-checkpoints").join(sidecar_id);
     for entry in std::fs::read_dir(&checkpoint_dir).unwrap() {
         let disk = std::fs::read(entry.unwrap().path()).unwrap();
         assert!(!disk
@@ -226,8 +226,8 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, unit_name: 
     std::fs::remove_dir_all(runtime_root).unwrap();
 }
 
-pub fn assert_absent_service_fails(home: &Path, unit_name: &str) {
-    let result = ServiceClient::connect(home, unit_name, "unused");
+pub fn assert_absent_service_fails(home: &Path, sidecar_id: &str) {
+    let result = ServiceClient::connect(home, sidecar_id, "unused");
     assert!(result.is_err(), "absent service must fail");
 }
 
