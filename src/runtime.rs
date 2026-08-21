@@ -28,7 +28,30 @@ struct SessionState {
     source_event_sequence: u64,
     source_output_sequence: u64,
     gaps: u64,
+    alt_active: bool,
+    suppressed_replies: u64,
     frame_signal: Arc<(Mutex<u64>, Condvar)>,
+}
+
+fn status_snapshot(registry: &Registry) -> Value {
+    let registry = registry.lock().unwrap();
+    let sessions: Vec<Value> = registry
+        .values()
+        .map(|state| {
+            json!({
+                "session": state.session,
+                "generation": state.generation,
+                "window": state.window,
+                "pane": state.pane,
+                "eventSequence": state.source_event_sequence,
+                "outputSequence": state.source_output_sequence,
+                "gaps": state.gaps,
+                "altActive": state.alt_active,
+                "suppressedReplies": state.suppressed_replies,
+            })
+        })
+        .collect();
+    json!({ "sessions": sessions })
 }
 
 #[derive(Clone)]
@@ -95,6 +118,8 @@ impl Runtime {
                 source_event_sequence: observation.start_event_sequence(),
                 source_output_sequence: observation.start_output_sequence(),
                 gaps: 0,
+                alt_active: false,
+                suppressed_replies: 0,
                 frame_signal: Arc::new((
                     Mutex::new(observation.start_output_sequence()),
                     Condvar::new(),
@@ -211,6 +236,8 @@ impl Runtime {
                 source_event_sequence: observation.start_event_sequence(),
                 source_output_sequence: observation.start_output_sequence(),
                 gaps: 0,
+                alt_active: false,
+                suppressed_replies: 0,
                 frame_signal: Arc::new((
                     Mutex::new(observation.start_output_sequence()),
                     Condvar::new(),
@@ -307,25 +334,7 @@ impl Runtime {
     }
 
     fn status(&self) -> Value {
-        let registry = self.registry.lock().unwrap();
-        let sessions: Vec<Value> = registry
-            .values()
-            .map(|state| {
-                let mirror = state.mirror.lock().unwrap();
-                json!({
-                    "session": state.session,
-                    "generation": state.generation,
-                    "window": state.window,
-                    "pane": state.pane,
-                    "eventSequence": state.source_event_sequence,
-                    "outputSequence": state.source_output_sequence,
-                    "gaps": state.gaps,
-                    "altActive": mirror.alt_active(),
-                    "suppressedReplies": mirror.suppressed_replies(),
-                })
-            })
-            .collect();
-        result_ok(json!({ "sessions": sessions }))
+        result_ok(status_snapshot(&self.registry))
     }
 
     fn frame(&self, request: &Value) -> Value {
@@ -482,13 +491,19 @@ fn apply_observation(
             bytes,
             ..
         } => {
-            mirror.lock().unwrap().feed(&bytes);
+            let (alt_active, suppressed_replies) = {
+                let mut mirror = mirror.lock().unwrap();
+                mirror.feed(&bytes);
+                (mirror.alt_active(), mirror.suppressed_replies())
+            };
             let mut states = registry.lock().unwrap();
             let Some(state) = states.get_mut(key) else {
                 return false;
             };
             state.source_event_sequence = event_sequence;
             state.source_output_sequence = through_sequence;
+            state.alt_active = alt_active;
+            state.suppressed_replies = suppressed_replies;
             let (sequence, ready) = &*state.frame_signal;
             *sequence.lock().unwrap() = through_sequence;
             ready.notify_all();
@@ -922,6 +937,8 @@ mod tests {
                 source_event_sequence: 0,
                 source_output_sequence: 0,
                 gaps: 0,
+                alt_active: false,
+                suppressed_replies: 0,
                 frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
             },
         )])));
