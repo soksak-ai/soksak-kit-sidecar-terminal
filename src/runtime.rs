@@ -826,6 +826,28 @@ impl ServiceClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mirror::TerminalFrame;
+    use std::sync::mpsc;
+
+    struct BlockingMirror {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    impl TerminalStateMirror for BlockingMirror {
+        fn feed(&mut self, _bytes: &[u8]) {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+        }
+        fn resize(&mut self, _cols: u16, _rows: u16) {}
+        fn rehydrate(&self) -> Vec<u8> { vec![] }
+        fn cold_paint(&self) -> Vec<u8> { vec![] }
+        fn frame(&self) -> TerminalFrame {
+            TerminalFrame { cols: 1, rows: 1, cursor: (0, 0), alt_active: false, lines: vec![] }
+        }
+        fn alt_active(&self) -> bool { false }
+        fn suppressed_replies(&self) -> u64 { 0 }
+    }
 
     #[test]
     fn unit_endpoints_are_independent() {
@@ -834,5 +856,36 @@ mod tests {
             proto::service_socket_path(home, "soksak-sidecar-terminal-vt100"),
             proto::service_socket_path(home, "soksak-sidecar-terminal-ghostty")
         );
+    }
+
+    #[test]
+    fn slow_engine_feed_does_not_hold_the_session_registry() {
+        let (entered_send, entered_receive) = mpsc::channel();
+        let (release_send, release_receive) = mpsc::channel();
+        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> = Arc::new(Mutex::new(Box::new(
+            BlockingMirror { entered: entered_send, release: release_receive },
+        )));
+        let key = (Some("window".to_string()), "pane".to_string());
+        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
+            key.clone(),
+            SessionState {
+                session: 1, generation: 1, window: key.0.clone(), pane: key.1.clone(),
+                mirror: mirror.clone(), source_event_sequence: 0, source_output_sequence: 0,
+                gaps: 0, frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
+            },
+        )])));
+        let applying = {
+            let registry = registry.clone();
+            let mirror = mirror.clone();
+            let key = key.clone();
+            std::thread::spawn(move || apply_observation(
+                ObservationFrame::Output { event_sequence: 1, from_sequence: 0, through_sequence: 1, bytes: vec![b'x'] },
+                &mirror, &registry, &key, None,
+            ))
+        };
+        entered_receive.recv().unwrap();
+        assert!(registry.try_lock().is_ok(), "engine feed held the session registry");
+        release_send.send(()).unwrap();
+        assert!(applying.join().unwrap());
     }
 }
