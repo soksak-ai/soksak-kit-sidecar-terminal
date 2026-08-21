@@ -461,66 +461,95 @@ fn consume_observations(
             Ok(Some(frame)) => frame,
             Ok(None) | Err(_) => break,
         };
-        let mut states = registry.lock().unwrap();
-        let Some(state) = states.get_mut(&key) else {
-            return;
-        };
-        match frame {
-            ObservationFrame::Output {
-                event_sequence,
-                through_sequence,
-                bytes,
-                ..
-            } => {
-                mirror.lock().unwrap().feed(&bytes);
-                state.source_event_sequence = event_sequence;
-                state.source_output_sequence = through_sequence;
-                let (sequence, ready) = &*state.frame_signal;
-                *sequence.lock().unwrap() = through_sequence;
-                ready.notify_all();
-                if let Some(checkpoint) = &checkpoint {
-                    let _ = checkpoint.send(CheckpointEvent::Dirty {
-                        generation: state.generation,
-                        sequence: through_sequence,
-                    });
-                }
-            }
-            ObservationFrame::Resize {
-                event_sequence,
-                cols,
-                rows,
-            } => {
-                mirror.lock().unwrap().resize(cols, rows);
-                state.source_event_sequence = event_sequence;
-            }
-            ObservationFrame::Gap {
-                through_event_sequence,
-                through_sequence,
-                ..
-            } => {
-                state.gaps += 1;
-                state.source_event_sequence = through_event_sequence;
-                state.source_output_sequence = through_sequence;
-                let (sequence, ready) = &*state.frame_signal;
-                *sequence.lock().unwrap() = through_sequence;
-                ready.notify_all();
-            }
-            ObservationFrame::End { .. } => {
-                if let Some(checkpoint) = &checkpoint {
-                    let _ = checkpoint.send(CheckpointEvent::Final {
-                        generation: state.generation,
-                        sequence: state.source_output_sequence,
-                    });
-                }
-                break;
-            }
-            ObservationFrame::Opened { .. } => {
-                state.gaps += 1;
-                break;
-            }
+        if !apply_observation(frame, &mirror, &registry, &key, checkpoint.as_ref()) {
+            break;
         }
     }
     registry.lock().unwrap().remove(&key);
+}
+
+fn apply_observation(
+    frame: ObservationFrame,
+    mirror: &Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    registry: &Registry,
+    key: &PaneKey,
+    checkpoint: Option<&Sender<CheckpointEvent>>,
+) -> bool {
+    match frame {
+        ObservationFrame::Output {
+            event_sequence,
+            through_sequence,
+            bytes,
+            ..
+        } => {
+            mirror.lock().unwrap().feed(&bytes);
+            let mut states = registry.lock().unwrap();
+            let Some(state) = states.get_mut(key) else {
+                return false;
+            };
+            state.source_event_sequence = event_sequence;
+            state.source_output_sequence = through_sequence;
+            let (sequence, ready) = &*state.frame_signal;
+            *sequence.lock().unwrap() = through_sequence;
+            ready.notify_all();
+            if let Some(checkpoint) = checkpoint {
+                let _ = checkpoint.send(CheckpointEvent::Dirty {
+                    generation: state.generation,
+                    sequence: through_sequence,
+                });
+            }
+            true
+        }
+        ObservationFrame::Resize {
+            event_sequence,
+            cols,
+            rows,
+        } => {
+            mirror.lock().unwrap().resize(cols, rows);
+            let mut states = registry.lock().unwrap();
+            let Some(state) = states.get_mut(key) else {
+                return false;
+            };
+            state.source_event_sequence = event_sequence;
+            true
+        }
+        ObservationFrame::Gap {
+            through_event_sequence,
+            through_sequence,
+            ..
+        } => {
+            let mut states = registry.lock().unwrap();
+            let Some(state) = states.get_mut(key) else {
+                return false;
+            };
+            state.gaps += 1;
+            state.source_event_sequence = through_event_sequence;
+            state.source_output_sequence = through_sequence;
+            let (sequence, ready) = &*state.frame_signal;
+            *sequence.lock().unwrap() = through_sequence;
+            ready.notify_all();
+            true
+        }
+        ObservationFrame::End { .. } => {
+            let states = registry.lock().unwrap();
+            let Some(state) = states.get(key) else {
+                return false;
+            };
+            if let Some(checkpoint) = checkpoint {
+                let _ = checkpoint.send(CheckpointEvent::Final {
+                    generation: state.generation,
+                    sequence: state.source_output_sequence,
+                });
+            }
+            false
+        }
+        ObservationFrame::Opened { .. } => {
+            if let Some(state) = registry.lock().unwrap().get_mut(key) {
+                state.gaps += 1;
+            }
+            false
+        }
+    }
 }
 
 enum CheckpointEvent {
@@ -840,13 +869,27 @@ mod tests {
             self.release.recv().unwrap();
         }
         fn resize(&mut self, _cols: u16, _rows: u16) {}
-        fn rehydrate(&self) -> Vec<u8> { vec![] }
-        fn cold_paint(&self) -> Vec<u8> { vec![] }
-        fn frame(&self) -> TerminalFrame {
-            TerminalFrame { cols: 1, rows: 1, cursor: (0, 0), alt_active: false, lines: vec![] }
+        fn rehydrate(&self) -> Vec<u8> {
+            vec![]
         }
-        fn alt_active(&self) -> bool { false }
-        fn suppressed_replies(&self) -> u64 { 0 }
+        fn cold_paint(&self) -> Vec<u8> {
+            vec![]
+        }
+        fn frame(&self) -> TerminalFrame {
+            TerminalFrame {
+                cols: 1,
+                rows: 1,
+                cursor: (0, 0),
+                alt_active: false,
+                lines: vec![],
+            }
+        }
+        fn alt_active(&self) -> bool {
+            false
+        }
+        fn suppressed_replies(&self) -> u64 {
+            0
+        }
     }
 
     #[test]
@@ -862,29 +905,50 @@ mod tests {
     fn slow_engine_feed_does_not_hold_the_session_registry() {
         let (entered_send, entered_receive) = mpsc::channel();
         let (release_send, release_receive) = mpsc::channel();
-        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> = Arc::new(Mutex::new(Box::new(
-            BlockingMirror { entered: entered_send, release: release_receive },
-        )));
+        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
+            Arc::new(Mutex::new(Box::new(BlockingMirror {
+                entered: entered_send,
+                release: release_receive,
+            })));
         let key = (Some("window".to_string()), "pane".to_string());
         let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
             key.clone(),
             SessionState {
-                session: 1, generation: 1, window: key.0.clone(), pane: key.1.clone(),
-                mirror: mirror.clone(), source_event_sequence: 0, source_output_sequence: 0,
-                gaps: 0, frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
+                session: 1,
+                generation: 1,
+                window: key.0.clone(),
+                pane: key.1.clone(),
+                mirror: mirror.clone(),
+                source_event_sequence: 0,
+                source_output_sequence: 0,
+                gaps: 0,
+                frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
             },
         )])));
         let applying = {
             let registry = registry.clone();
             let mirror = mirror.clone();
             let key = key.clone();
-            std::thread::spawn(move || apply_observation(
-                ObservationFrame::Output { event_sequence: 1, from_sequence: 0, through_sequence: 1, bytes: vec![b'x'] },
-                &mirror, &registry, &key, None,
-            ))
+            std::thread::spawn(move || {
+                apply_observation(
+                    ObservationFrame::Output {
+                        event_sequence: 1,
+                        from_sequence: 0,
+                        through_sequence: 1,
+                        bytes: vec![b'x'],
+                    },
+                    &mirror,
+                    &registry,
+                    &key,
+                    None,
+                )
+            })
         };
         entered_receive.recv().unwrap();
-        assert!(registry.try_lock().is_ok(), "engine feed held the session registry");
+        assert!(
+            registry.try_lock().is_ok(),
+            "engine feed held the session registry"
+        );
         release_send.send(()).unwrap();
         assert!(applying.join().unwrap());
     }
