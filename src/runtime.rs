@@ -92,14 +92,6 @@ impl Runtime {
         })
     }
 
-    pub fn subscribe_existing(&self, cols: u16, rows: u16) -> io::Result<()> {
-        let sessions = self.control.lock().unwrap().list_sessions()?;
-        for session in sessions {
-            self.subscribe(session, cols, rows)?;
-        }
-        Ok(())
-    }
-
     fn subscribe(&self, info: SessionInfo, cols: u16, rows: u16) -> io::Result<bool> {
         let key = (info.window_label.clone(), info.pane_id.clone());
         if self.registry.lock().unwrap().contains_key(&key) {
@@ -745,7 +737,6 @@ pub fn run_service(
 ) -> io::Result<()> {
     let (home, runtime_root) = parse_roots(arguments)?;
     let runtime = Runtime::connect(home, runtime_root.clone(), unit_name, factory)?;
-    runtime.subscribe_existing(80, 24)?;
     let listener = bind_service(&runtime_root, unit_name)?;
     let token = load_or_create_token(&runtime_root, unit_name)?;
     println!(
@@ -914,6 +905,14 @@ mod tests {
             proto::service_socket_path(home, "soksak-sidecar-terminal-vt100"),
             proto::service_socket_path(home, "soksak-sidecar-terminal-ghostty")
         );
+    }
+
+    #[test]
+    fn service_startup_does_not_subscribe_unrequested_sessions() {
+        let source = include_str!("runtime.rs");
+        let run_service = source.split("pub fn run_service").nth(1).unwrap();
+        let body = run_service.split("fn parse_roots").next().unwrap();
+        assert!(!body.contains("subscribe_existing"));
     }
 
     #[test]
