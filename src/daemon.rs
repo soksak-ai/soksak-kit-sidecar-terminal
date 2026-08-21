@@ -155,14 +155,14 @@ impl ControlClient {
         &mut self,
         window_label: &str,
         pane_id: &str,
-        sidecar_id: &str,
+        provider: &str,
     ) -> io::Result<String> {
         let data = self.request(
             "pty.prepareObserver",
             json!({
                 "windowLabel": window_label,
                 "paneId": pane_id,
-                "sidecarId": sidecar_id,
+                "provider": provider,
             }),
         )?;
         data.get("token")
