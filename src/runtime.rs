@@ -518,11 +518,7 @@ fn consume_observations(
     key: PaneKey,
     checkpoint: Option<Sender<CheckpointEvent>>,
 ) {
-    loop {
-        let frame = match observations.next_frame() {
-            Ok(Some(frame)) => frame,
-            Ok(None) | Err(_) => break,
-        };
+    while let Ok(Some(frame)) = observations.next_frame() {
         if !apply_observation(frame, &mirror, &registry, &key, checkpoint.as_ref()) {
             break;
         }
