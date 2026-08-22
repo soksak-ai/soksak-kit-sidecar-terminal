@@ -38,7 +38,7 @@ fn repository_owns_public_metadata() {
     assert!(release_files.contains("\"kit.json\""));
     assert!(release_files.contains("\"src/checkpoint.rs\""));
     let workflow = fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
-    assert!(workflow.contains("ref: 23c3aba2b57069b816801d279bb85d0e0c00fe79"));
+    assert!(workflow.contains("ref: 1673f33d2102f6ad168f28871d312301fd307371"));
     assert!(workflow.contains("owner-enforced immutable releases must be enabled"));
 }
 

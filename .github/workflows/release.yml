@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: soksak-ai/soksak-spec
-          ref: 23c3aba2b57069b816801d279bb85d0e0c00fe79
+          ref: 1673f33d2102f6ad168f28871d312301fd307371
           path: soksak-spec
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -53,6 +53,7 @@ jobs:
       - working-directory: component
         env:
           SOKSAK_RELEASE_TOKEN: ${{ steps.release-token.outputs.token }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
         run: |
           test "$(gh api repos/${{ github.repository }}/immutable-releases --jq '.enabled and .enforced_by_owner')" = true || { echo "owner-enforced immutable releases must be enabled before tagging" >&2; exit 1; }
-          node ../soksak-spec/packages/plugin-spec/release-template/publish-portable-release.mjs --repository "${{ github.repository }}" --commit "${{ github.sha }}" --artifacts "$GITHUB_WORKSPACE/artifacts" --manifest "$GITHUB_WORKSPACE/artifacts/release.json"
+          node ../soksak-spec/packages/plugin-spec/release-template/publish-canonical-release.mjs --repository "${{ github.repository }}" --commit "${{ github.sha }}" --artifacts "$GITHUB_WORKSPACE/artifacts" --manifest "$GITHUB_WORKSPACE/artifacts/release.json"
