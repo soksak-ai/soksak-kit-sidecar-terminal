@@ -28,6 +28,18 @@ fn repository_owns_public_metadata() {
         .contains("repository = \"https://github.com/soksak-ai/soksak-kit-sidecar-terminal\""));
     assert!(Path::new("README.md").is_file());
     assert!(Path::new("LICENSE").is_file());
+    let kit: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string("kit.json").expect("read kit.json"),
+    ).expect("parse kit.json");
+    assert_eq!(kit["id"], "soksak-kit-sidecar-terminal");
+    assert_eq!(kit["version"], "0.0.1");
+    assert!(manifest.contains("version = \"0.0.1\""));
+    let release_files = fs::read_to_string("release-files.json").expect("read release files");
+    assert!(release_files.contains("\"kit.json\""));
+    assert!(release_files.contains("\"src/checkpoint.rs\""));
+    let workflow = fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
+    assert!(workflow.contains("ref: 23c3aba2b57069b816801d279bb85d0e0c00fe79"));
+    assert!(workflow.contains("owner-enforced immutable releases must be enabled"));
 }
 
 fn display(path: &Path) -> String {
