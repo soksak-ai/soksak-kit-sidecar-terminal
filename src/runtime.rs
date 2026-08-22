@@ -31,6 +31,7 @@ struct SessionState {
     alt_active: bool,
     suppressed_replies: u64,
     frame_signal: Arc<(Mutex<u64>, Condvar)>,
+    size_signal: Arc<(Mutex<(u16, u16)>, Condvar)>,
 }
 
 fn status_snapshot(registry: &Registry) -> Value {
@@ -116,6 +117,7 @@ impl Runtime {
                     Mutex::new(observation.start_output_sequence()),
                     Condvar::new(),
                 )),
+                size_signal: Arc::new((Mutex::new((cols, rows)), Condvar::new())),
             },
         );
         self.start_consumer(observation, mirror, key);
@@ -234,6 +236,7 @@ impl Runtime {
                     Mutex::new(observation.start_output_sequence()),
                     Condvar::new(),
                 )),
+                size_signal: Arc::new((Mutex::new((cols, rows)), Condvar::new())),
             },
         );
         self.start_consumer(observation, mirror, key);
@@ -327,6 +330,60 @@ impl Runtime {
 
     fn status(&self) -> Value {
         result_ok(status_snapshot(&self.registry))
+    }
+
+    fn wait_size(&self, request: &Value) -> Value {
+        let Some(key) = pane_key(request) else {
+            return result_error("INVALID_PARAMS", "window and pane are required");
+        };
+        let Some(cols) = request
+            .get("cols")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0 && *value <= u16::MAX as u64)
+        else {
+            return result_error("INVALID_PARAMS", "valid cols are required");
+        };
+        let Some(rows) = request
+            .get("rows")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0 && *value <= u16::MAX as u64)
+        else {
+            return result_error("INVALID_PARAMS", "valid rows are required");
+        };
+        let timeout_ms = request
+            .get("timeoutMs")
+            .and_then(Value::as_u64)
+            .unwrap_or(10_000)
+            .min(30_000);
+        let signal = {
+            let registry = self.registry.lock().unwrap();
+            let Some(state) = registry.get(&key) else {
+                return result_error("NOT_FOUND", "no live terminal-state mirror for this key");
+            };
+            state.size_signal.clone()
+        };
+        let wanted = (cols as u16, rows as u16);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let (size, ready) = &*signal;
+        let mut size = size.lock().unwrap();
+        while *size != wanted {
+            let now = Instant::now();
+            if now >= deadline {
+                return result_error(
+                    "TIMEOUT",
+                    "terminal size was not observed before the deadline",
+                );
+            }
+            let (next, timeout) = ready.wait_timeout(size, deadline - now).unwrap();
+            size = next;
+            if timeout.timed_out() && *size != wanted {
+                return result_error(
+                    "TIMEOUT",
+                    "terminal size was not observed before the deadline",
+                );
+            }
+        }
+        result_ok(json!({ "cols": size.0, "rows": size.1 }))
     }
 
     fn frame(&self, request: &Value) -> Value {
@@ -428,6 +485,7 @@ impl Runtime {
             "terminal.ensureSession" => self.ensure_session(request),
             "terminal.rehydrate" => self.rehydrate(request),
             "terminal.resize" => self.resize(request),
+            "terminal.waitSize" => self.wait_size(request),
             "terminal.status" => self.status(),
             "terminal.archived" => self.archived(request),
             "terminal.archive" => self.archive(request),
@@ -518,6 +576,9 @@ fn apply_observation(
                 return false;
             };
             state.source_event_sequence = event_sequence;
+            let (size, ready) = &*state.size_signal;
+            *size.lock().unwrap() = (cols, rows);
+            ready.notify_all();
             true
         }
         ObservationFrame::Gap {
@@ -662,6 +723,7 @@ fn serve_connection(connection: Stream, runtime: &Runtime, token: &str) -> io::R
                             { "name": "terminal.ensureSession", "owner": "plugin" },
                             { "name": "terminal.rehydrate", "owner": "plugin" },
                             { "name": "terminal.resize", "owner": "plugin" },
+                            { "name": "terminal.waitSize", "owner": "plugin" },
                             { "name": "terminal.status", "owner": "plugin" }
                             ,{ "name": "terminal.archived", "owner": "plugin" }
                             ,{ "name": "terminal.archive", "owner": "plugin" }
@@ -937,6 +999,7 @@ mod tests {
                 alt_active: false,
                 suppressed_replies: 0,
                 frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
+                size_signal: Arc::new((Mutex::new((1, 1)), Condvar::new())),
             },
         )])));
         let applying = {
@@ -974,5 +1037,63 @@ mod tests {
         );
         release_send.send(()).unwrap();
         assert!(applying.join().unwrap());
+    }
+
+    #[test]
+    fn resize_observation_releases_exact_size_waiters() {
+        let (entered_send, _entered_receive) = mpsc::channel();
+        let (_release_send, release_receive) = mpsc::channel();
+        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
+            Arc::new(Mutex::new(Box::new(BlockingMirror {
+                entered: entered_send,
+                release: release_receive,
+            })));
+        let key = (Some("window".to_string()), "pane".to_string());
+        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
+            key.clone(),
+            SessionState {
+                session: 1,
+                generation: 1,
+                window: key.0.clone(),
+                pane: key.1.clone(),
+                mirror: mirror.clone(),
+                source_event_sequence: 0,
+                source_output_sequence: 0,
+                gaps: 0,
+                alt_active: false,
+                suppressed_replies: 0,
+                frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
+                size_signal: Arc::new((Mutex::new((90, 24)), Condvar::new())),
+            },
+        )])));
+        let waiting = {
+            let signal = registry
+                .lock()
+                .unwrap()
+                .get(&key)
+                .unwrap()
+                .size_signal
+                .clone();
+            std::thread::spawn(move || {
+                let (size, ready) = &*signal;
+                let mut size = size.lock().unwrap();
+                while *size != (54, 24) {
+                    size = ready.wait(size).unwrap();
+                }
+                *size
+            })
+        };
+        assert!(apply_observation(
+            ObservationFrame::Resize {
+                event_sequence: 1,
+                cols: 54,
+                rows: 24
+            },
+            &mirror,
+            &registry,
+            &key,
+            None,
+        ));
+        assert_eq!(waiting.join().unwrap(), (54, 24));
     }
 }
