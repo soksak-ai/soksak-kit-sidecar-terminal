@@ -18,16 +18,20 @@ pub const OBSERVATION_FRAME_RESIZE: u8 = 2;
 pub const OBSERVATION_FRAME_END: u8 = 3;
 pub const OBSERVATION_FRAME_OPENED: u8 = 4;
 
-pub fn pty_socket_path(runtime_root: &Path) -> PathBuf {
-    runtime_root.join(format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}.sock"))
+pub fn pty_socket_path(runtime_root: &Path) -> String {
+    soksak_contract_control::address(
+        runtime_root,
+        &format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}"),
+        cfg!(windows),
+    )
 }
 
 pub fn pty_token_path(runtime_root: &Path) -> PathBuf {
     runtime_root.join(format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}.token"))
 }
 
-pub fn service_socket_path(runtime_root: &Path, sidecar_id: &str) -> PathBuf {
-    runtime_root.join(format!("{sidecar_id}-p1.sock"))
+pub fn service_socket_path(runtime_root: &Path, sidecar_id: &str) -> String {
+    soksak_contract_control::address(runtime_root, &format!("{sidecar_id}-p1"), cfg!(windows))
 }
 
 pub fn hello(id: &str, token: &str) -> Value {
@@ -65,11 +69,11 @@ mod tests {
         let runtime = Path::new("/runtime");
         assert_eq!(
             pty_socket_path(runtime),
-            Path::new("/runtime/soksak-sidecar-pty-p1.sock")
+            "/runtime/soksak-sidecar-pty-p1.sock"
         );
         assert_eq!(
             service_socket_path(runtime, "soksak-sidecar-terminal-vt100"),
-            Path::new("/runtime/soksak-sidecar-terminal-vt100-p1.sock")
+            "/runtime/soksak-sidecar-terminal-vt100-p1.sock"
         );
     }
 

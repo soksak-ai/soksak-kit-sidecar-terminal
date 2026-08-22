@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use interprocess::local_socket::{prelude::*, GenericFilePath, Listener, ListenerOptions, Stream};
+use interprocess::local_socket::{prelude::*, Listener, ListenerOptions, Stream};
 use serde_json::{json, Value};
 
 use crate::checkpoint::{key_from_base64, CheckpointStore, KEY_ENV};
@@ -718,11 +718,9 @@ fn envelope_error(id: &str, code: &str, message: &str) -> Value {
 }
 
 pub fn bind_service(home: &Path, sidecar_id: &str) -> io::Result<Listener> {
+    std::fs::create_dir_all(home)?;
     let path = proto::service_socket_path(home, sidecar_id);
-    if let Some(directory) = path.parent() {
-        std::fs::create_dir_all(directory)?;
-    }
-    let name = path.as_os_str().to_fs_name::<GenericFilePath>()?;
+    let name = crate::transport_name::local_name(&path)?;
     ListenerOptions::new().name(name).create_sync()
 }
 
@@ -815,7 +813,7 @@ pub struct ServiceClient {
 impl ServiceClient {
     pub fn connect(home: &Path, sidecar_id: &str, token: &str) -> io::Result<Self> {
         let path = proto::service_socket_path(home, sidecar_id);
-        let name = path.as_os_str().to_fs_name::<GenericFilePath>()?;
+        let name = crate::transport_name::local_name(&path)?;
         let (recv, send) = Stream::connect(name)?.split();
         let mut client = Self {
             send,

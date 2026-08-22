@@ -308,8 +308,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "soksak-kit-sidecar-terminal"
+name = "soksak-contract-control"
 version = "0.0.1"
+source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=db724f6474eb486d775b6d799b95de8377ba3dc7#db724f6474eb486d775b6d799b95de8377ba3dc7"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
+name = "soksak-kit-sidecar-terminal"
+version = "0.0.2"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -318,6 +326,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "soksak-contract-control",
 ]
 
 [[package]]

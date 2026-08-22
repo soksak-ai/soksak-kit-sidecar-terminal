@@ -5,6 +5,7 @@ pub mod integration;
 pub mod mirror;
 pub mod proto;
 pub mod runtime;
+mod transport_name;
 
 pub trait TerminalStateMirror: Send {
     fn feed(&mut self, bytes: &[u8]);

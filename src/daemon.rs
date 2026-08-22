@@ -6,7 +6,7 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 
-use interprocess::local_socket::{prelude::*, GenericFilePath, RecvHalf, SendHalf, Stream};
+use interprocess::local_socket::{prelude::*, RecvHalf, SendHalf, Stream};
 use serde_json::{json, Value};
 
 use crate::proto;
@@ -32,14 +32,9 @@ fn read_token(runtime_root: &Path) -> io::Result<String> {
 
 fn connect(runtime_root: &Path) -> io::Result<(RecvHalf, SendHalf)> {
     let path = proto::pty_socket_path(runtime_root);
-    let name = path.as_os_str().to_fs_name::<GenericFilePath>()?;
+    let name = crate::transport_name::local_name(&path)?;
     Stream::connect(name)
-        .map_err(|error| {
-            other(format!(
-                "cannot reach PTY socket {}: {error}",
-                path.display()
-            ))
-        })
+        .map_err(|error| other(format!("cannot reach PTY socket {}: {error}", path)))
         .map(Stream::split)
 }
 
