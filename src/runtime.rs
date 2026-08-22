@@ -39,12 +39,15 @@ fn status_snapshot(registry: &Registry) -> Value {
     let sessions: Vec<Value> = registry
         .values()
         .map(|state| {
+            let size = *state.size_signal.0.lock().unwrap();
             json!({
                 "session": state.session,
                 "generation": state.generation,
                 "window": state.window,
                 "pane": state.pane,
                 "eventSequence": state.source_event_sequence,
+                "cols": size.0,
+                "rows": size.1,
                 "outputSequence": state.source_output_sequence,
                 "gaps": state.gaps,
                 "altActive": state.alt_active,
@@ -1094,6 +1097,11 @@ mod tests {
             &key,
             None,
         ));
+        let status = status_snapshot(&registry);
+        let session = &status["sessions"][0];
+        assert_eq!(session["cols"], 54);
+        assert_eq!(session["rows"], 24);
+        assert_eq!(session["eventSequence"], 1);
         assert_eq!(waiting.join().unwrap(), (54, 24));
     }
 }

@@ -12,3 +12,5 @@ The kit defines no terminal semantics and selects no engine.
 ```sh
 cargo test --locked
 ```
+Terminal status reports each recovery mirror's last observed columns, rows, and source event
+sequence. Callers use these facts to identify the first resize boundary that did not advance.
