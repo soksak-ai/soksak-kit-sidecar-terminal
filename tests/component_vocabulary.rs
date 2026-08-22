@@ -21,6 +21,15 @@ fn source_names_sidecars_directly() {
     }
 }
 
+#[test]
+fn repository_owns_public_metadata() {
+    let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    assert!(manifest
+        .contains("repository = \"https://github.com/soksak-ai/soksak-kit-sidecar-terminal\""));
+    assert!(Path::new("README.md").is_file());
+    assert!(Path::new("LICENSE").is_file());
+}
+
 fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }

@@ -1,6 +1,6 @@
-//! Client for the installed PTY unit.
+//! Client for the installed PTY sidecar.
 //!
-//! The unit speaks one control-envelope socket. pty.observe returns one response and then framed
+//! The sidecar speaks one control-envelope socket. pty.observe returns one response and then framed
 //! source events on that connection. This client keeps control and observer connections separate.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -55,7 +55,7 @@ fn read_line(reader: &mut BufReader<RecvHalf>) -> io::Result<Value> {
     if reader.read_line(&mut line)? == 0 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "PTY unit closed the connection",
+            "PTY sidecar closed the connection",
         ));
     }
     serde_json::from_str(line.trim())

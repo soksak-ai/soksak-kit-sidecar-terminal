@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 license = "MIT"
 description = "Shared recovery runtime for soksak terminal-state sidecars."
+repository = "https://github.com/soksak-ai/soksak-kit-sidecar-terminal"
 
 [dependencies]
 aes-gcm = "=0.10.3"

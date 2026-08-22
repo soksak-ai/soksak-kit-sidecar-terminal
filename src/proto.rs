@@ -1,4 +1,4 @@
-//! Local wire facts used by this unit.
+//! Local wire facts used by terminal-state sidecars.
 //!
 //! The PTY and terminal-state sidecars each own one identity-scoped socket. Both speak the shared
 //! control envelope before a connection becomes a byte stream. Paths name installed sidecars; the
@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 pub const CONTROL_PROTOCOL: u32 = 1;
 pub const PTY_PROTOCOL_VERSION: u32 = 1;
-pub const PTY_UNIT_NAME: &str = "soksak-sidecar-pty";
+pub const PTY_SIDECAR_NAME: &str = "soksak-sidecar-pty";
 
 pub const OBSERVATION_FRAME_OUTPUT: u8 = 0;
 pub const OBSERVATION_FRAME_GAP: u8 = 1;
@@ -19,11 +19,11 @@ pub const OBSERVATION_FRAME_END: u8 = 3;
 pub const OBSERVATION_FRAME_OPENED: u8 = 4;
 
 pub fn pty_socket_path(runtime_root: &Path) -> PathBuf {
-    runtime_root.join(format!("{PTY_UNIT_NAME}-p{PTY_PROTOCOL_VERSION}.sock"))
+    runtime_root.join(format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}.sock"))
 }
 
 pub fn pty_token_path(runtime_root: &Path) -> PathBuf {
-    runtime_root.join(format!("{PTY_UNIT_NAME}-p{PTY_PROTOCOL_VERSION}.token"))
+    runtime_root.join(format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}.token"))
 }
 
 pub fn service_socket_path(runtime_root: &Path, sidecar_id: &str) -> PathBuf {
