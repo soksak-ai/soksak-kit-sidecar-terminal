@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::proto;
 
 fn other(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, message.into())
+    io::Error::other(message.into())
 }
 
 fn read_token(runtime_root: &Path) -> io::Result<String> {
@@ -104,9 +104,7 @@ impl ControlClient {
         let id = format!("terminal-state-{}", self.request_sequence);
         write_line(&mut self.writer, &proto::request(&id, command, request))?;
         let reply = read_line(&mut self.reader)?;
-        proto::response_data(&reply)
-            .map(Clone::clone)
-            .map_err(other)
+        proto::response_data(&reply).cloned().map_err(other)
     }
 
     pub fn list_sessions(&mut self) -> io::Result<Vec<SessionInfo>> {
