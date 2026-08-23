@@ -9,9 +9,9 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 SIDECAR_ID = "soksak-sidecar-pty"
-VERSION = "0.0.4"
+VERSION = "0.0.6"
 REPOSITORY = "https://github.com/soksak-ai/soksak-sidecar-pty"
-COMMIT = "f730162451476c5e94daa939f7c669fbe480b743"
+COMMIT = "0ddb87e1aadc94aa83ca751a80f55c84c5835843"
 RELEASE_ROOT = f"{REPOSITORY}/releases/download/v{VERSION}"
 RELEASE_DOCUMENT = f"{RELEASE_ROOT}/release.json"
 
@@ -27,12 +27,12 @@ def download(url: str, limit: int) -> bytes:
 
 
 def select_artifact(document: dict, target: str) -> dict:
-    if document.get("sidecar") != {"id": SIDECAR_ID, "version": VERSION}:
+    if document.get("kind") != "sidecar" or document.get("id") != SIDECAR_ID or document.get("version") != VERSION:
         raise ValueError("PTY release identity is invalid")
     if document.get("source") != {"repository": REPOSITORY, "commit": COMMIT}:
         raise ValueError("PTY release source is invalid")
-    if not document.get("reports"):
-        raise ValueError("PTY release has no conformance reports")
+    if not document.get("evidence"):
+        raise ValueError("PTY release has no conformance evidence")
     matches = [artifact for artifact in document.get("artifacts", []) if artifact.get("target") == target]
     if len(matches) != 1:
         raise ValueError(f"PTY release has {len(matches)} artifacts for {target}")

@@ -402,12 +402,16 @@ impl Runtime {
         let Some(key) = pane_key(request) else {
             return result_error("INVALID_PARAMS", "window and pane are required");
         };
-        let (mirror, signal) = {
+        let (mirror, mirror_output_sequence, signal) = {
             let registry = self.registry.lock().unwrap();
             let Some(state) = registry.get(&key) else {
                 return result_error("NOT_FOUND", "no live terminal-state mirror for this key");
             };
-            (state.mirror.clone(), state.frame_signal.clone())
+            (
+                state.mirror.clone(),
+                state.mirror_output_sequence.clone(),
+                state.frame_signal.clone(),
+            )
         };
         if let Some(after) = request.get("afterSequence").and_then(Value::as_u64) {
             let (sequence, ready) = &*signal;
@@ -416,9 +420,8 @@ impl Runtime {
                 sequence = ready.wait(sequence).unwrap();
             }
         }
-        let frame = mirror.lock().unwrap().frame();
-        match serde_json::to_value(frame) {
-            Ok(frame) => result_ok(frame),
+        match frame_snapshot(&mirror, &mirror_output_sequence) {
+            Ok(snapshot) => result_ok(snapshot),
             Err(error) => result_error("FRAME_FAILED", &error.to_string()),
         }
     }
@@ -635,6 +638,19 @@ fn apply_observation(
             false
         }
     }
+}
+
+fn frame_snapshot(
+    mirror: &Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    output_sequence: &AtomicU64,
+) -> Result<Value, serde_json::Error> {
+    let mirror = mirror.lock().unwrap();
+    let frame = mirror.frame();
+    let output_sequence = output_sequence.load(Ordering::Acquire);
+    Ok(json!({
+        "frame": frame,
+        "outputSequence": output_sequence,
+    }))
 }
 
 enum CheckpointEvent {
@@ -1183,5 +1199,20 @@ mod tests {
         assert_eq!(session["rows"], 24);
         assert_eq!(session["eventSequence"], 1);
         assert_eq!(waiting.join().unwrap(), (54, 24));
+    }
+
+    #[test]
+    fn frame_response_carries_the_exact_applied_output_sequence() {
+        let (entered_send, _entered_receive) = mpsc::channel();
+        let (_release_send, release_receive) = mpsc::channel();
+        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
+            Arc::new(Mutex::new(Box::new(BlockingMirror {
+                entered: entered_send,
+                release: release_receive,
+            })));
+        let progress = AtomicU64::new(37);
+        let response = frame_snapshot(&mirror, &progress).unwrap();
+        assert_eq!(response["outputSequence"], 37);
+        assert!(response.get("frame").is_some());
     }
 }

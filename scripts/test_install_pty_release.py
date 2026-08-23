@@ -11,10 +11,12 @@ import install_pty_release as installer
 class InstallerTest(unittest.TestCase):
     def test_release_identity_and_target_are_exact(self):
         document = {
-            "sidecar": {"id": installer.SIDECAR_ID, "version": installer.VERSION},
+            "kind": "sidecar",
+            "id": installer.SIDECAR_ID,
+            "version": installer.VERSION,
             "source": {"repository": installer.REPOSITORY, "commit": installer.COMMIT},
             "artifacts": [{"target": "x86_64-unknown-linux-gnu", "url": installer.RELEASE_ROOT + "/artifact.tar.gz", "sha256": "a" * 64, "size": 1, "format": "tar.gz", "manifest": "sidecar.json"}],
-            "reports": [{"url": installer.RELEASE_ROOT + "/report.json", "sha256": "b" * 64}],
+            "evidence": [{"url": installer.RELEASE_ROOT + "/report.json", "sha256": "b" * 64}],
         }
         self.assertEqual(installer.select_artifact(document, "x86_64-unknown-linux-gnu")["target"], "x86_64-unknown-linux-gnu")
         document["source"]["commit"] = "0" * 40
