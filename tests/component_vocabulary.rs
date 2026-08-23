@@ -32,13 +32,15 @@ fn repository_owns_public_metadata() {
         serde_json::from_str(&fs::read_to_string("kit.json").expect("read kit.json"))
             .expect("parse kit.json");
     assert_eq!(kit["id"], "soksak-kit-sidecar-terminal");
-    assert_eq!(kit["version"], "0.0.4");
-    assert!(manifest.contains(r#"version = "0.0.4""#));
+    assert_eq!(kit["version"], "0.0.5");
+    assert!(manifest.contains(r#"version = "0.0.5""#));
     let release_files = fs::read_to_string("release-files.json").expect("read release files");
     assert!(release_files.contains("\"kit.json\""));
     assert!(release_files.contains("\"README.ko.md\""));
     assert!(release_files.contains("\"src/checkpoint.rs\""));
     assert!(release_files.contains("\"src/transport_name.rs\""));
+    assert!(release_files.contains("\"scripts/install_pty_release.py\""));
+    assert!(release_files.contains("\"scripts/test_install_pty_release.py\""));
     let workflow =
         fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
     assert!(workflow.contains("ref: 4adfa80cb0596a9380723fe1cae62b9a14ed6e28"));
