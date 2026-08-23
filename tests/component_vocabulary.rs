@@ -37,6 +37,7 @@ fn repository_owns_public_metadata() {
     assert_eq!(kit["id"], "soksak-kit-sidecar-terminal");
     assert_eq!(kit["version"], "0.0.6");
     assert!(manifest.contains(r#"version = "0.0.6""#));
+    assert!(manifest.contains("rev = \"6d1a1c8cbad7fa131bb4aef94a730fa6d18dbaff\""));
     let release_files = fs::read_to_string("release-files.json").expect("read release files");
     assert!(release_files.contains("\"kit.json\""));
     assert!(release_files.contains("\"README.ko.md\""));
@@ -46,7 +47,7 @@ fn repository_owns_public_metadata() {
     assert!(release_files.contains("\"scripts/test_install_pty_release.py\""));
     let workflow =
         fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
-    assert!(workflow.contains("ref: 4adfa80cb0596a9380723fe1cae62b9a14ed6e28"));
+    assert!(workflow.contains("ref: e5de2538bb79c60edd7713c4cb2cce8b983e951b"));
     assert!(workflow.contains("owner-enforced immutable releases must be enabled"));
 }
 

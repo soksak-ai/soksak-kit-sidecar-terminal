@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: soksak-ai/soksak-spec
-          ref: 4adfa80cb0596a9380723fe1cae62b9a14ed6e28
+          ref: e5de2538bb79c60edd7713c4cb2cce8b983e951b
           path: soksak-spec
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30

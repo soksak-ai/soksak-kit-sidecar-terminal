@@ -12,7 +12,7 @@ aes-gcm = "=0.10.3"
 base64 = "=0.22.1"
 getrandom = "=0.3.4"
 interprocess = "=2.4.2"
-soksak-contract-control = { git = "https://github.com/soksak-ai/soksak-contract-control", rev = "db724f6474eb486d775b6d799b95de8377ba3dc7" }
+soksak-contract-control = { git = "https://github.com/soksak-ai/soksak-contract-control", rev = "6d1a1c8cbad7fa131bb4aef94a730fa6d18dbaff" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.10.9"

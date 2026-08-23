@@ -309,8 +309,8 @@ dependencies = [
 
 [[package]]
 name = "soksak-contract-control"
-version = "0.0.1"
-source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=db724f6474eb486d775b6d799b95de8377ba3dc7#db724f6474eb486d775b6d799b95de8377ba3dc7"
+version = "0.0.2"
+source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=6d1a1c8cbad7fa131bb4aef94a730fa6d18dbaff#6d1a1c8cbad7fa131bb4aef94a730fa6d18dbaff"
 dependencies = [
  "sha2",
 ]
