@@ -24,6 +24,7 @@ fn source_names_sidecars_directly() {
 #[test]
 fn repository_owns_public_metadata() {
     let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    assert!(manifest.lines().any(|line| line == r#"edition = "2024""#));
     assert!(
         manifest
             .contains("repository = \"https://github.com/soksak-ai/soksak-kit-sidecar-terminal\"")
