@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +26,7 @@ struct SessionState {
     window: Option<String>,
     pane: String,
     mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    mirror_output_sequence: Arc<AtomicU64>,
     source_event_sequence: u64,
     source_output_sequence: u64,
     gaps: u64,
@@ -111,6 +113,9 @@ impl Runtime {
                 window: info.window_label,
                 pane: info.pane_id,
                 mirror: mirror.clone(),
+                mirror_output_sequence: Arc::new(AtomicU64::new(
+                    observation.start_output_sequence(),
+                )),
                 source_event_sequence: observation.start_event_sequence(),
                 source_output_sequence: observation.start_output_sequence(),
                 gaps: 0,
@@ -230,6 +235,9 @@ impl Runtime {
                 window: info.window_label,
                 pane: info.pane_id,
                 mirror: mirror.clone(),
+                mirror_output_sequence: Arc::new(AtomicU64::new(
+                    observation.start_output_sequence(),
+                )),
                 source_event_sequence: observation.start_event_sequence(),
                 source_output_sequence: observation.start_output_sequence(),
                 gaps: 0,
@@ -276,10 +284,11 @@ impl Runtime {
             );
         }
         let session = state.session;
-        let sequence = state.source_output_sequence;
+        let mirror_output_sequence = state.mirror_output_sequence.clone();
         let generation = state.generation;
         let event_sequence = state.source_event_sequence;
         let mirror = state.mirror.lock().unwrap();
+        let sequence = mirror_output_sequence.load(Ordering::Acquire);
         let paint = mirror.rehydrate();
         let frame = mirror.frame();
         let alt_active = mirror.alt_active();
@@ -452,8 +461,9 @@ impl Runtime {
             return result_error("NOT_FOUND", "no live terminal-state mirror for this key");
         };
         let generation = state.generation;
-        let sequence = state.source_output_sequence;
+        let mirror_output_sequence = state.mirror_output_sequence.clone();
         let mirror = state.mirror.lock().unwrap();
+        let sequence = mirror_output_sequence.load(Ordering::Acquire);
         let paint = mirror.cold_paint();
         let frame = mirror.frame();
         let window = key.0.as_deref().unwrap_or("__no-window__");
@@ -540,9 +550,17 @@ fn apply_observation(
             bytes,
             ..
         } => {
+            let mirror_output_sequence = {
+                let states = registry.lock().unwrap();
+                let Some(state) = states.get(key) else {
+                    return false;
+                };
+                state.mirror_output_sequence.clone()
+            };
             let (alt_active, suppressed_replies) = {
                 let mut mirror = mirror.lock().unwrap();
                 mirror.feed(&bytes);
+                mirror_output_sequence.store(through_sequence, Ordering::Release);
                 (mirror.alt_active(), mirror.suppressed_replies())
             };
             let mut states = registry.lock().unwrap();
@@ -992,6 +1010,7 @@ mod tests {
                 window: key.0.clone(),
                 pane: key.1.clone(),
                 mirror: mirror.clone(),
+                mirror_output_sequence: Arc::new(AtomicU64::new(0)),
                 source_event_sequence: 0,
                 source_output_sequence: 0,
                 gaps: 0,
@@ -1039,6 +1058,70 @@ mod tests {
     }
 
     #[test]
+    fn mirror_snapshot_and_output_sequence_advance_atomically() {
+        let (entered_send, entered_receive) = mpsc::channel();
+        let (release_send, release_receive) = mpsc::channel();
+        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
+            Arc::new(Mutex::new(Box::new(BlockingMirror {
+                entered: entered_send,
+                release: release_receive,
+            })));
+        let progress = Arc::new(AtomicU64::new(0));
+        let key = (Some("window".to_string()), "pane".to_string());
+        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
+            key.clone(),
+            SessionState {
+                session: 1,
+                generation: 1,
+                window: key.0.clone(),
+                pane: key.1.clone(),
+                mirror: mirror.clone(),
+                mirror_output_sequence: progress.clone(),
+                source_event_sequence: 0,
+                source_output_sequence: 0,
+                gaps: 0,
+                alt_active: false,
+                suppressed_replies: 0,
+                frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
+                size_signal: Arc::new((Mutex::new((1, 1)), Condvar::new())),
+            },
+        )])));
+        let applying = {
+            let mirror = mirror.clone();
+            let registry = registry.clone();
+            let key = key.clone();
+            std::thread::spawn(move || {
+                apply_observation(
+                    ObservationFrame::Output {
+                        event_sequence: 1,
+                        from_sequence: 0,
+                        through_sequence: 37,
+                        bytes: vec![b'x'],
+                    },
+                    &mirror,
+                    &registry,
+                    &key,
+                    None,
+                )
+            })
+        };
+        entered_receive.recv().unwrap();
+        let snapshot = {
+            let mirror = mirror.clone();
+            let progress = progress.clone();
+            std::thread::spawn(move || {
+                let mirror = mirror.lock().unwrap();
+                let paint = mirror.rehydrate();
+                let sequence = progress.load(Ordering::Acquire);
+                (paint, sequence)
+            })
+        };
+        release_send.send(()).unwrap();
+        assert!(applying.join().unwrap());
+        assert_eq!(snapshot.join().unwrap().1, 37);
+    }
+
+    #[test]
     fn resize_observation_releases_exact_size_waiters() {
         let (entered_send, _entered_receive) = mpsc::channel();
         let (_release_send, release_receive) = mpsc::channel();
@@ -1056,6 +1139,7 @@ mod tests {
                 window: key.0.clone(),
                 pane: key.1.clone(),
                 mirror: mirror.clone(),
+                mirror_output_sequence: Arc::new(AtomicU64::new(0)),
                 source_event_sequence: 0,
                 source_output_sequence: 0,
                 gaps: 0,
