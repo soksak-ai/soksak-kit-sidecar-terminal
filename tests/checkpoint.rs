@@ -34,9 +34,11 @@ fn checkpoint_round_trip_never_writes_plaintext() {
         .unwrap();
     let path = store.path("window-a", "pane-a").unwrap();
     let disk = fs::read(&path).unwrap();
-    assert!(!disk
-        .windows(21)
-        .any(|bytes| bytes == b"VISIBLE-SECRET-SCREEN"));
+    assert!(
+        !disk
+            .windows(21)
+            .any(|bytes| bytes == b"VISIBLE-SECRET-SCREEN")
+    );
     let opened = store.read("window-a", "pane-a").unwrap().unwrap();
     assert_eq!(opened.generation, 7);
     assert_eq!(opened.sequence, 41);

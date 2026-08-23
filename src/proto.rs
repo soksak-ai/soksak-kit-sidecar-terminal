@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const CONTROL_PROTOCOL: u32 = 1;
 pub const PTY_PROTOCOL_VERSION: u32 = 1;

@@ -6,8 +6,8 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 
-use interprocess::local_socket::{prelude::*, RecvHalf, SendHalf, Stream};
-use serde_json::{json, Value};
+use interprocess::local_socket::{RecvHalf, SendHalf, Stream, prelude::*};
+use serde_json::{Value, json};
 
 use crate::proto;
 

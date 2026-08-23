@@ -6,16 +6,16 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use interprocess::local_socket::{prelude::*, Listener, ListenerOptions, Stream};
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD as B64;
+use interprocess::local_socket::{Listener, ListenerOptions, Stream, prelude::*};
+use serde_json::{Value, json};
 
-use crate::checkpoint::{key_from_base64, CheckpointStore, KEY_ENV};
+use crate::checkpoint::{CheckpointStore, KEY_ENV, key_from_base64};
 use crate::daemon::{
     ControlClient, ObservationFrame, ObservationStream, PreparedObservationStream, SessionInfo,
 };
-use crate::{proto, MirrorFactory, TerminalStateMirror};
+use crate::{MirrorFactory, TerminalStateMirror, proto};
 
 type PaneKey = (Option<String>, String);
 type Registry = Arc<Mutex<HashMap<PaneKey, SessionState>>>;

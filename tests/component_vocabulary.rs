@@ -24,16 +24,18 @@ fn source_names_sidecars_directly() {
 #[test]
 fn repository_owns_public_metadata() {
     let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    assert!(manifest
-        .contains("repository = \"https://github.com/soksak-ai/soksak-kit-sidecar-terminal\""));
+    assert!(
+        manifest
+            .contains("repository = \"https://github.com/soksak-ai/soksak-kit-sidecar-terminal\"")
+    );
     assert!(Path::new("README.md").is_file());
     assert!(Path::new("LICENSE").is_file());
     let kit: serde_json::Value =
         serde_json::from_str(&fs::read_to_string("kit.json").expect("read kit.json"))
             .expect("parse kit.json");
     assert_eq!(kit["id"], "soksak-kit-sidecar-terminal");
-    assert_eq!(kit["version"], "0.0.5");
-    assert!(manifest.contains(r#"version = "0.0.5""#));
+    assert_eq!(kit["version"], "0.0.6");
+    assert!(manifest.contains(r#"version = "0.0.6""#));
     let release_files = fs::read_to_string("release-files.json").expect("read release files");
     assert!(release_files.contains("\"kit.json\""));
     assert!(release_files.contains("\"README.ko.md\""));

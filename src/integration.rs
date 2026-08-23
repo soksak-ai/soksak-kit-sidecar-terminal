@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD as B64;
+use serde_json::{Value, json};
 
 use crate::daemon::{ControlClient, LiveStream};
 use crate::proto;
@@ -172,15 +172,19 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, sidecar_id:
             .unwrap(),
     );
     let archived_paint = B64.decode(archived["paint"].as_str().unwrap()).unwrap();
-    assert!(archived_paint
-        .windows(CHECKPOINT_MARKER.len())
-        .any(|value| value == CHECKPOINT_MARKER.as_bytes()));
+    assert!(
+        archived_paint
+            .windows(CHECKPOINT_MARKER.len())
+            .any(|value| value == CHECKPOINT_MARKER.as_bytes())
+    );
     let checkpoint_dir = home.join("terminal-checkpoints").join(sidecar_id);
     for entry in std::fs::read_dir(&checkpoint_dir).unwrap() {
         let disk = std::fs::read(entry.unwrap().path()).unwrap();
-        assert!(!disk
-            .windows(CHECKPOINT_MARKER.len())
-            .any(|value| value == CHECKPOINT_MARKER.as_bytes()));
+        assert!(
+            !disk
+                .windows(CHECKPOINT_MARKER.len())
+                .any(|value| value == CHECKPOINT_MARKER.as_bytes())
+        );
     }
     assert!(data["uptoSeq"].as_u64().unwrap() >= MARKER.len() as u64);
     let snapshot_sequence = data["uptoSeq"].as_u64().unwrap();
