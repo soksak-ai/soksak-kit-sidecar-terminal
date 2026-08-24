@@ -472,6 +472,53 @@ fn mode_sets(modes: TerminalModes) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    struct HiddenCursorEngine;
+
+    impl TerminalEngine for HiddenCursorEngine {
+        fn new(_: u16, _: u16) -> Self {
+            Self
+        }
+        fn feed(&mut self, _: &[u8]) {}
+        fn resize(&mut self, _: u16, _: u16) {}
+        fn cols(&self) -> u16 {
+            1
+        }
+        fn rows(&self) -> u16 {
+            1
+        }
+        fn cursor(&self) -> (usize, usize) {
+            (0, 0)
+        }
+        fn alt_active(&self) -> bool {
+            false
+        }
+        fn history_size(&self) -> usize {
+            0
+        }
+        fn modes(&self) -> TerminalModes {
+            TerminalModes {
+                show_cursor: false,
+                ..TerminalModes::default()
+            }
+        }
+        fn line_cells(&self, _: i32) -> Vec<TerminalCell> {
+            vec![]
+        }
+        fn suppressed_replies(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn frame_exposes_the_engine_cursor_visibility() {
+        let frame = RecoveryMirror::<HiddenCursorEngine>::new(1, 1).frame();
+        assert!(!frame.cursor_visible);
+        assert_eq!(
+            serde_json::to_value(frame).unwrap()["cursor_visible"],
+            serde_json::Value::Bool(false)
+        );
+    }
+
     #[test]
     fn recognizes_alt_entry_across_chunks() {
         assert!(matches!(
