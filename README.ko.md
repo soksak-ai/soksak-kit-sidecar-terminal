@@ -16,3 +16,15 @@ Live handoff snapshot은 mirror paint와 절대 PTY output sequence를 원자적
 `pty.attachLease`로 이어질 때 byte를 중복 재생하거나 누락하지 않습니다.
 `terminal.frame`은 frame과 해당 mirror가 실제 적용한 절대 출력 순서를 같은 lock에서
 게시하므로 호출자가 요청 좌표로 렌더 진행을 추정하지 않습니다.
+
+## 검증
+
+```sh
+make verify
+```
+
+정확한 toolchain 정본은 `rust-toolchain.toml`과 `.python-version`입니다. Make는 dependency를
+준비하기 전에 version과 architecture 불일치를 거부하고 Rust suite와 PTY release installer
+suite를 모두 실행합니다. 릴리스 Actions도 release train이 URL과 SHA-256으로 전달한 immutable
+spec package를 주입한 뒤 같은 명령을 사용하며 spec source를 checkout하거나 다시 빌드하지
+않습니다.
