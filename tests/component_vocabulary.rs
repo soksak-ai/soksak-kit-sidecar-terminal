@@ -47,7 +47,34 @@ fn repository_owns_public_metadata() {
     assert!(release_files.contains("\"scripts/test_install_pty_release.py\""));
     let workflow =
         fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
-    assert!(workflow.contains("ref: e5de2538bb79c60edd7713c4cb2cce8b983e951b"));
+    let makefile = fs::read_to_string("Makefile").expect("read Makefile");
+    for target in ["preflight:", "prepare:", "build:", "verify:"] {
+        assert!(makefile.contains(target), "Makefile omits {target}");
+    }
+    assert!(Path::new("rust-toolchain.toml").is_file());
+    for required in [
+        "spec_url:",
+        "spec_sha256:",
+        "rust-toolchain.toml",
+        "node-version-file: component/.dependency/spec-package/package.json",
+        "make verify",
+        ".dependency/spec-package/release-template/build-portable-release.mjs",
+    ] {
+        assert!(workflow.contains(required), "workflow omits {required}");
+    }
+    for forbidden in [
+        "repository: soksak-ai/soksak-spec",
+        "toolchain: \"1.96.0\"",
+        "node-version: \"24.19.0\"",
+        "version: \"10.30.3\"",
+        "pnpm install --frozen-lockfile",
+        "cargo test --locked",
+    ] {
+        assert!(
+            !workflow.contains(forbidden),
+            "workflow duplicates {forbidden}"
+        );
+    }
     assert!(workflow.contains("owner-enforced immutable releases must be enabled"));
 }
 
