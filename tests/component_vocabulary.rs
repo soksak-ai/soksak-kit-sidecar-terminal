@@ -52,10 +52,12 @@ fn repository_owns_public_metadata() {
         assert!(makefile.contains(target), "Makefile omits {target}");
     }
     assert!(Path::new("rust-toolchain.toml").is_file());
+    assert!(Path::new(".python-version").is_file());
     for required in [
         "spec_url:",
         "spec_sha256:",
         "rust-toolchain.toml",
+        "python-version-file: component/.python-version",
         "node-version-file: component/.dependency/spec-package/package.json",
         "make verify",
         ".dependency/spec-package/release-template/build-portable-release.mjs",
