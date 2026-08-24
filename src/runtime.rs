@@ -979,6 +979,7 @@ mod tests {
                 cols: 1,
                 rows: 1,
                 cursor: (0, 0),
+                cursor_visible: true,
                 alt_active: false,
                 lines: vec![],
             }

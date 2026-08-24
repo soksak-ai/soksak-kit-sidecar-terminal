@@ -12,6 +12,7 @@ fn frame() -> TerminalFrame {
         cols: 80,
         rows: 24,
         cursor: (0, 0),
+        cursor_visible: true,
         alt_active: false,
         lines: vec![],
     }

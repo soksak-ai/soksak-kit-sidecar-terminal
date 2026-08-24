@@ -70,6 +70,7 @@ pub struct TerminalFrame {
     pub cols: u16,
     pub rows: u16,
     pub cursor: (usize, usize),
+    pub cursor_visible: bool,
     pub alt_active: bool,
     pub lines: Vec<Vec<FrameCell>>,
 }
@@ -237,6 +238,7 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
             cols: self.engine.cols(),
             rows: self.engine.rows(),
             cursor: self.engine.cursor(),
+            cursor_visible: self.engine.modes().show_cursor,
             alt_active: self.engine.alt_active(),
             lines,
         }
