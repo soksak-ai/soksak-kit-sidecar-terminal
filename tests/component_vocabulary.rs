@@ -35,8 +35,8 @@ fn repository_owns_public_metadata() {
         serde_json::from_str(&fs::read_to_string("kit.json").expect("read kit.json"))
             .expect("parse kit.json");
     assert_eq!(kit["id"], "soksak-kit-sidecar-terminal");
-    assert_eq!(kit["version"], "0.0.7");
-    assert!(manifest.contains(r#"version = "0.0.7""#));
+    let version = kit["version"].as_str().expect("kit version");
+    assert!(manifest.lines().any(|line| line == format!("version = \"{version}\"")));
     assert!(manifest.contains("rev = \"6d1a1c8cbad7fa131bb4aef94a730fa6d18dbaff\""));
     let release_files = fs::read_to_string("release-files.json").expect("read release files");
     assert!(release_files.contains("\"kit.json\""));

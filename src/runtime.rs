@@ -815,8 +815,48 @@ fn envelope_error(id: &str, code: &str, message: &str) -> Value {
 pub fn bind_service(home: &Path, sidecar_id: &str) -> io::Result<Listener> {
     std::fs::create_dir_all(home)?;
     let path = proto::service_socket_path(home, sidecar_id);
+    reclaim_stale_service_socket(Path::new(&path))?;
     let name = crate::transport_name::local_name(&path)?;
     ListenerOptions::new().name(name).create_sync()
+}
+
+#[cfg(unix)]
+fn reclaim_stale_service_socket(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::FileTypeExt;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_socket() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("service endpoint is not a socket: {}", path.display()),
+        ));
+    }
+    let address = path.to_str().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "service socket path is not UTF-8")
+    })?;
+    let name = crate::transport_name::local_name(address)?;
+    match Stream::connect(name) {
+        Ok(connection) => {
+            drop(connection);
+            Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("service endpoint is live: {}", path.display()),
+            ))
+        }
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+            std::fs::remove_file(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn reclaim_stale_service_socket(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 pub fn service_token_path(runtime_root: &Path, sidecar_id: &str) -> PathBuf {
@@ -956,6 +996,39 @@ mod tests {
     use super::*;
     use crate::mirror::TerminalFrame;
     use std::sync::mpsc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    fn socket_test_root() -> PathBuf {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = Path::new("/tmp").join(format!("sk{:x}{:x}", std::process::id(), nonce));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_bind_reclaims_a_socket_left_by_a_gone_listener() {
+        let root = socket_test_root();
+        let path = proto::service_socket_path(&root, "terminal-state");
+        let first = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(first);
+        assert!(Path::new(&path).exists());
+        let second = bind_service(&root, "terminal-state").unwrap();
+        drop(second);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_bind_never_unlinks_a_live_listener() {
+        let root = socket_test_root();
+        let first = bind_service(&root, "terminal-state").unwrap();
+        let error = bind_service(&root, "terminal-state").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        drop(first);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     struct BlockingMirror {
         entered: Sender<()>,
