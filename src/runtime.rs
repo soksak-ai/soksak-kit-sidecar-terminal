@@ -786,25 +786,73 @@ fn pane_key(request: &Value) -> Option<PaneKey> {
     ))
 }
 
+fn write_response<W: Write>(writer: &Arc<Mutex<W>>, response: &Value) -> io::Result<()> {
+    let mut writer = writer
+        .lock()
+        .map_err(|_| io::Error::other("terminal response writer lock is poisoned"))?;
+    writeln!(writer, "{response}")
+}
+
+fn dispatch_response<W, F>(writer: Arc<Mutex<W>>, response: F)
+where
+    W: Write + Send + 'static,
+    F: FnOnce() -> Value + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let response = response();
+        if let Err(error) = write_response(&writer, &response) {
+            eprintln!("terminal response failed: {error}");
+        }
+    });
+}
+
+fn command_response(runtime: &Runtime, id: &str, command: &str, request: &Value) -> Value {
+    let result = runtime.command(command, request);
+    if result["ok"] == true {
+        envelope_ok(id, result.get("data").cloned().unwrap_or(Value::Null))
+    } else {
+        envelope_error(
+            id,
+            result
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("FAILED"),
+            result
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("request failed"),
+        )
+    }
+}
+
 fn serve_connection(connection: Stream, runtime: &Runtime, token: &str) -> io::Result<()> {
-    let (recv, mut send) = connection.split();
+    let (recv, send) = connection.split();
+    let send = Arc::new(Mutex::new(send));
     let reader = BufReader::new(recv);
     let mut greeted = false;
     for line in reader.lines() {
         let line = line?;
         let request: Value = serde_json::from_str(&line)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let id = request.get("id").and_then(Value::as_str).unwrap_or("");
-        let command = request.get("command").and_then(Value::as_str).unwrap_or("");
+        let id = request
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let command = request
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         let response = if command == "system.hello" {
             let protocol = request.pointer("/args/protocol").and_then(Value::as_u64);
             let received_token = request.pointer("/args/token").and_then(Value::as_str);
             if protocol != Some(proto::CONTROL_PROTOCOL as u64) || received_token != Some(token) {
-                envelope_error(id, "GREETING", "invalid protocol or token")
+                envelope_error(&id, "GREETING", "invalid protocol or token")
             } else {
                 greeted = true;
                 envelope_ok(
-                    id,
+                    &id,
                     json!({
                         "protocol": proto::CONTROL_PROTOCOL,
                         "identity": runtime.sidecar_id,
@@ -825,30 +873,18 @@ fn serve_connection(connection: Stream, runtime: &Runtime, token: &str) -> io::R
                 )
             }
         } else if !greeted {
-            envelope_error(id, "GREETING", "system.hello is required")
+            envelope_error(&id, "GREETING", "system.hello is required")
         } else {
             let request = request
                 .pointer("/args/request")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let result = runtime.command(command, &request);
-            if result["ok"] == true {
-                envelope_ok(id, result.get("data").cloned().unwrap_or(Value::Null))
-            } else {
-                envelope_error(
-                    id,
-                    result
-                        .get("code")
-                        .and_then(Value::as_str)
-                        .unwrap_or("FAILED"),
-                    result
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("request failed"),
-                )
-            }
+            let runtime = runtime.clone();
+            let writer = send.clone();
+            dispatch_response(writer, move || command_response(&runtime, &id, &command, &request));
+            continue;
         };
-        writeln!(send, "{response}")?;
+        write_response(&send, &response)?;
     }
     Ok(())
 }
@@ -1248,6 +1284,36 @@ mod tests {
         ));
         assert!(remove_session_if_owner(&registry, &key, &replacement));
         assert!(!registry.lock().unwrap().contains_key(&key));
+    }
+
+    #[test]
+    fn response_dispatch_does_not_serialize_blocked_commands() {
+        let writer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let (first_started_send, first_started_receive) = mpsc::channel();
+        let (release_first_send, release_first_receive) = mpsc::channel();
+        let (second_started_send, second_started_receive) = mpsc::channel();
+        let (done_send, done_receive) = mpsc::channel();
+
+        let first_done = done_send.clone();
+        dispatch_response(writer.clone(), move || {
+            first_started_send.send(()).unwrap();
+            release_first_receive.recv().unwrap();
+            first_done.send(()).unwrap();
+            json!({ "id": "first" })
+        });
+        first_started_receive.recv().unwrap();
+        dispatch_response(writer, move || {
+            second_started_send.send(()).unwrap();
+            done_send.send(()).unwrap();
+            json!({ "id": "second" })
+        });
+
+        second_started_receive
+            .recv_timeout(Duration::from_millis(100))
+            .expect("a blocked request serialized the next command");
+        release_first_send.send(()).unwrap();
+        done_receive.recv_timeout(Duration::from_secs(1)).unwrap();
+        done_receive.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 
     #[test]
