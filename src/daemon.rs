@@ -4,12 +4,24 @@
 //! source events on that connection. This client keeps control and observer connections separate.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use interprocess::local_socket::{RecvHalf, SendHalf, Stream, prelude::*};
 use serde_json::{Value, json};
 
 use crate::proto;
+
+// ended reports the failures that are a connection going, not a unit refusing.
+fn ended(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+    )
+}
 
 fn other(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
@@ -81,6 +93,7 @@ pub struct SnapshotLease {
 }
 
 pub struct ControlClient {
+    runtime_root: PathBuf,
     writer: SendHalf,
     reader: BufReader<RecvHalf>,
     request_sequence: u64,
@@ -88,18 +101,40 @@ pub struct ControlClient {
 
 impl ControlClient {
     pub fn connect(runtime_root: &Path) -> io::Result<Self> {
-        let token = read_token(runtime_root)?;
-        let (recv, mut send) = connect(runtime_root)?;
-        let mut reader = BufReader::new(recv);
-        greet(&mut reader, &mut send, &token)?;
+        let (reader, writer) = Self::greeted(runtime_root)?;
         Ok(Self {
-            writer: send,
+            runtime_root: runtime_root.to_path_buf(),
+            writer,
             reader,
             request_sequence: 0,
         })
     }
 
+    fn greeted(runtime_root: &Path) -> io::Result<(BufReader<RecvHalf>, SendHalf)> {
+        let token = read_token(runtime_root)?;
+        let (recv, mut send) = connect(runtime_root)?;
+        let mut reader = BufReader::new(recv);
+        greet(&mut reader, &mut send, &token)?;
+        Ok((reader, send))
+    }
+
+    // A connection the unit ended is not the unit going: the socket is where the unit is, and a
+    // request that finds the connection gone reaches it by greeting a new one. Only a request that
+    // fails on a connection it just opened is a unit that is not there.
     pub fn request(&mut self, command: &str, request: Value) -> io::Result<Value> {
+        match self.send_once(command, request.clone()) {
+            Ok(value) => Ok(value),
+            Err(error) if ended(&error) => {
+                let (reader, writer) = Self::greeted(&self.runtime_root)?;
+                self.reader = reader;
+                self.writer = writer;
+                self.send_once(command, request)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn send_once(&mut self, command: &str, request: Value) -> io::Result<Value> {
         self.request_sequence += 1;
         let id = format!("terminal-state-{}", self.request_sequence);
         write_line(&mut self.writer, &proto::request(&id, command, request))?;
