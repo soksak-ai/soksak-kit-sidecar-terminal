@@ -1,3 +1,5 @@
+use crate::frame::encode_line;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalColor {
     Default,
@@ -6,7 +8,8 @@ pub enum TerminalColor {
     Rgb(u8, u8, u8),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalModes {
     pub bracketed_paste: bool,
     pub app_cursor: bool,
@@ -21,6 +24,13 @@ pub struct TerminalModes {
     pub show_cursor: bool,
     pub line_wrap: bool,
     pub insert: bool,
+}
+
+/// What the engine behind a mirror can report on a cell. Published once in `terminal.status`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MirrorCapabilities {
+    pub hyperlinks: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +49,8 @@ pub struct TerminalCell {
     pub spacer: bool,
     pub wrapline: bool,
     pub zerowidth: Vec<char>,
+    /// Hyperlink target (OSC 8), when the engine tracks one.
+    pub link: Option<String>,
 }
 
 pub trait TerminalEngine: Send + Sized {
@@ -56,6 +68,18 @@ pub trait TerminalEngine: Send + Sized {
     fn history_size(&self) -> usize;
     fn modes(&self) -> TerminalModes;
     fn line_cells(&self, line: i32) -> Vec<TerminalCell>;
+    /// Every viewport row with the view scrolled `offset` rows into history: row `y` is engine
+    /// line `y - offset`. `offset` is already clamped by the caller. Engines with a cheaper
+    /// consecutive read override this.
+    fn viewport_cells(&self, offset: usize) -> Vec<Vec<TerminalCell>> {
+        let offset = i32::try_from(offset).unwrap_or(i32::MAX);
+        (0..self.rows() as i32)
+            .map(|y| self.line_cells(y - offset))
+            .collect()
+    }
+    fn capabilities(&self) -> MirrorCapabilities {
+        MirrorCapabilities::default()
+    }
     fn suppressed_replies(&self) -> u64;
 }
 
@@ -65,22 +89,46 @@ pub struct RecoveryMirror<E: TerminalEngine> {
     held: Vec<u8>,
 }
 
+/// The viewport as runs. Checkpoints store it; `terminal.frame` derives deltas from it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalFrame {
     pub cols: u16,
     pub rows: u16,
+    /// `(row, col)`, 0-based.
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
     pub alt_active: bool,
-    pub lines: Vec<Vec<FrameCell>>,
+    pub history_size: usize,
+    pub offset: usize,
+    pub modes: TerminalModes,
+    pub lines: Vec<FrameLine>,
 }
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct FrameCell {
+#[serde(rename_all = "camelCase")]
+pub struct FrameLine {
+    pub y: u16,
+    pub wrapped: bool,
+    pub runs: Vec<FrameRun>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameRun {
     pub text: String,
     pub fg: String,
     pub bg: String,
     pub attrs: u16,
+    pub n: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub wide: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 struct FrozenPrimary {
@@ -202,49 +250,50 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
     pub fn history_size(&self) -> usize {
         self.engine.history_size()
     }
+    pub fn capabilities(&self) -> MirrorCapabilities {
+        self.engine.capabilities()
+    }
     pub fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         self.engine.line_cells(line)
     }
-    pub fn frame(&self) -> TerminalFrame {
-        let lines = (0..self.engine.rows() as i32)
-            .map(|line| {
-                self.engine
-                    .line_cells(line)
-                    .into_iter()
-                    .filter(|cell| !cell.spacer)
-                    .map(|cell| {
-                        let mut text = String::new();
-                        text.push(cell.ch);
-                        text.extend(cell.zerowidth);
-                        let attrs = (cell.bold as u16)
-                            | ((cell.dim as u16) << 1)
-                            | ((cell.italic as u16) << 2)
-                            | ((cell.underline as u16) << 3)
-                            | ((cell.inverse as u16) << 4)
-                            | ((cell.strikeout as u16) << 5)
-                            | ((cell.hidden as u16) << 6);
-                        FrameCell {
-                            text,
-                            fg: frame_color(cell.fg),
-                            bg: frame_color(cell.bg),
-                            attrs,
-                            wide: cell.wide,
-                        }
-                    })
-                    .collect()
-            })
+
+    /// The viewport scrolled `offset` rows into history. Clamped to the history size; 0 while
+    /// the alternate screen is active. The effective offset is echoed in the frame.
+    pub fn frame_at(&self, offset: usize) -> TerminalFrame {
+        let alt_active = self.engine.alt_active();
+        let history_size = self.engine.history_size();
+        let offset = if alt_active {
+            0
+        } else {
+            offset.min(history_size)
+        };
+        let modes = self.engine.modes();
+        let lines = self
+            .engine
+            .viewport_cells(offset)
+            .iter()
+            .enumerate()
+            .map(|(y, cells)| encode_line(y as u16, cells))
             .collect();
         TerminalFrame {
             cols: self.engine.cols(),
             rows: self.engine.rows(),
             cursor: self.engine.cursor(),
-            cursor_visible: self.engine.modes().show_cursor,
-            alt_active: self.engine.alt_active(),
+            cursor_visible: modes.show_cursor,
+            alt_active,
+            history_size,
+            offset,
+            modes,
             lines,
         }
     }
+
+    pub fn frame(&self) -> TerminalFrame {
+        self.frame_at(0)
+    }
 }
-fn frame_color(color: TerminalColor) -> String {
+
+pub(crate) fn frame_color(color: TerminalColor) -> String {
     match color {
         TerminalColor::Default => "default".into(),
         TerminalColor::Named(i) | TerminalColor::Indexed(i) => format!("palette:{i}"),
@@ -515,10 +564,10 @@ mod tests {
     fn frame_exposes_the_engine_cursor_visibility() {
         let frame = RecoveryMirror::<HiddenCursorEngine>::new(1, 1).frame();
         assert!(!frame.cursor_visible);
-        assert_eq!(
-            serde_json::to_value(frame).unwrap()["cursor_visible"],
-            serde_json::Value::Bool(false)
-        );
+        let value = serde_json::to_value(frame).unwrap();
+        assert_eq!(value["cursorVisible"], serde_json::Value::Bool(false));
+        assert_eq!(value["modes"]["showCursor"], serde_json::Value::Bool(false));
+        assert!(value.get("cursor_visible").is_none());
     }
 
     #[test]

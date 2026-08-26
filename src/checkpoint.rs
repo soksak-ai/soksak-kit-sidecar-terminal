@@ -12,7 +12,9 @@ use sha2::{Digest, Sha256};
 use crate::mirror::TerminalFrame;
 
 const MAGIC: &[u8; 8] = b"SKTERM01";
-const VERSION: u8 = 1;
+// Payload format 2 stores the v2 frame (runs, modes, history, offset). A format-1 file fails the
+// header check and surfaces as CHECKPOINT_CORRUPT; it is not migrated.
+const VERSION: u8 = 2;
 const NONCE_BYTES: usize = 12;
 const HEADER_BYTES: usize = 8 + 1 + 8 + 8 + NONCE_BYTES;
 pub const KEY_ENV: &str = "SOKSAK_TERMINAL_CHECKPOINT_KEY";

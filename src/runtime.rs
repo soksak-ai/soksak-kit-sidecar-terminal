@@ -15,17 +15,23 @@ use crate::checkpoint::{CheckpointStore, KEY_ENV, key_from_base64};
 use crate::daemon::{
     ControlClient, ObservationFrame, ObservationStream, PreparedObservationStream, SessionInfo,
 };
+use crate::frame::{FrameReply, FrameSubscribers, delta};
+use crate::mirror::MirrorCapabilities;
 use crate::{MirrorFactory, TerminalStateMirror, proto};
 
 type PaneKey = (Option<String>, String);
 type Registry = Arc<Mutex<HashMap<PaneKey, SessionState>>>;
+type SharedMirror = Arc<Mutex<Box<dyn TerminalStateMirror>>>;
+
+const FRAME_TIMEOUT_DEFAULT_MS: u64 = 10_000;
+const FRAME_TIMEOUT_MAX_MS: u64 = 30_000;
 
 struct SessionState {
     session: u64,
     generation: u64,
     window: Option<String>,
     pane: String,
-    mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    mirror: SharedMirror,
     mirror_output_sequence: Arc<AtomicU64>,
     source_event_sequence: u64,
     source_output_sequence: u64,
@@ -34,9 +40,36 @@ struct SessionState {
     suppressed_replies: u64,
     frame_signal: Arc<(Mutex<u64>, Condvar)>,
     size_signal: Arc<(Mutex<(u16, u16)>, Condvar)>,
+    frame_subscribers: Arc<Mutex<FrameSubscribers>>,
 }
 
-fn status_snapshot(registry: &Registry) -> Value {
+fn new_session_state(
+    info: SessionInfo,
+    observation: &ObservationStream,
+    mirror: SharedMirror,
+    cols: u16,
+    rows: u16,
+) -> SessionState {
+    let start = observation.start_output_sequence();
+    SessionState {
+        session: info.session,
+        generation: observation.generation(),
+        window: info.window_label,
+        pane: info.pane_id,
+        mirror,
+        mirror_output_sequence: Arc::new(AtomicU64::new(start)),
+        source_event_sequence: observation.start_event_sequence(),
+        source_output_sequence: start,
+        gaps: 0,
+        alt_active: false,
+        suppressed_replies: 0,
+        frame_signal: Arc::new((Mutex::new(start), Condvar::new())),
+        size_signal: Arc::new((Mutex::new((cols, rows)), Condvar::new())),
+        frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
+    }
+}
+
+fn status_snapshot(registry: &Registry, capabilities: MirrorCapabilities) -> Value {
     let registry = registry.lock().unwrap();
     let sessions: Vec<Value> = registry
         .values()
@@ -57,7 +90,7 @@ fn status_snapshot(registry: &Registry) -> Value {
             })
         })
         .collect();
-    json!({ "sessions": sessions })
+    json!({ "sessions": sessions, "capabilities": capabilities })
 }
 
 #[derive(Clone)]
@@ -65,6 +98,7 @@ pub struct Runtime {
     runtime_root: PathBuf,
     sidecar_id: &'static str,
     factory: MirrorFactory,
+    capabilities: MirrorCapabilities,
     registry: Registry,
     control: Arc<Mutex<ControlClient>>,
     prepared: Arc<Mutex<HashMap<String, ObservationStream>>>,
@@ -87,10 +121,12 @@ impl Runtime {
             )?)),
             _ => None,
         };
+        let capabilities = factory(1, 1).capabilities();
         Ok(Self {
             runtime_root,
             sidecar_id,
             factory,
+            capabilities,
             registry: Arc::new(Mutex::new(HashMap::new())),
             control: Arc::new(Mutex::new(control)),
             prepared: Arc::new(Mutex::new(HashMap::new())),
@@ -104,29 +140,10 @@ impl Runtime {
             return Ok(false);
         }
         let observation = ObservationStream::subscribe(&self.runtime_root, info.session)?;
-        let mirror = Arc::new(Mutex::new((self.factory)(cols, rows)));
+        let mirror: SharedMirror = Arc::new(Mutex::new((self.factory)(cols, rows)));
         self.registry.lock().unwrap().insert(
             key.clone(),
-            SessionState {
-                session: info.session,
-                generation: observation.generation(),
-                window: info.window_label,
-                pane: info.pane_id,
-                mirror: mirror.clone(),
-                mirror_output_sequence: Arc::new(AtomicU64::new(
-                    observation.start_output_sequence(),
-                )),
-                source_event_sequence: observation.start_event_sequence(),
-                source_output_sequence: observation.start_output_sequence(),
-                gaps: 0,
-                alt_active: false,
-                suppressed_replies: 0,
-                frame_signal: Arc::new((
-                    Mutex::new(observation.start_output_sequence()),
-                    Condvar::new(),
-                )),
-                size_signal: Arc::new((Mutex::new((cols, rows)), Condvar::new())),
-            },
+            new_session_state(info, &observation, mirror.clone(), cols, rows),
         );
         self.start_consumer(observation, mirror, key);
         Ok(true)
@@ -226,40 +243,16 @@ impl Runtime {
         rows: u16,
     ) -> io::Result<()> {
         let key = (info.window_label.clone(), info.pane_id.clone());
-        let mirror = Arc::new(Mutex::new((self.factory)(cols, rows)));
+        let mirror: SharedMirror = Arc::new(Mutex::new((self.factory)(cols, rows)));
         self.registry.lock().unwrap().insert(
             key.clone(),
-            SessionState {
-                session: info.session,
-                generation: observation.generation(),
-                window: info.window_label,
-                pane: info.pane_id,
-                mirror: mirror.clone(),
-                mirror_output_sequence: Arc::new(AtomicU64::new(
-                    observation.start_output_sequence(),
-                )),
-                source_event_sequence: observation.start_event_sequence(),
-                source_output_sequence: observation.start_output_sequence(),
-                gaps: 0,
-                alt_active: false,
-                suppressed_replies: 0,
-                frame_signal: Arc::new((
-                    Mutex::new(observation.start_output_sequence()),
-                    Condvar::new(),
-                )),
-                size_signal: Arc::new((Mutex::new((cols, rows)), Condvar::new())),
-            },
+            new_session_state(info, &observation, mirror.clone(), cols, rows),
         );
         self.start_consumer(observation, mirror, key);
         Ok(())
     }
 
-    fn start_consumer(
-        &self,
-        observation: ObservationStream,
-        mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
-        key: PaneKey,
-    ) {
+    fn start_consumer(&self, observation: ObservationStream, mirror: SharedMirror, key: PaneKey) {
         let registry = self.registry.clone();
         let checkpoint = self.checkpoints.as_ref().map(|store| {
             start_checkpoint_worker(store.clone(), self.sidecar_id, key.clone(), mirror.clone())
@@ -290,7 +283,7 @@ impl Runtime {
         let mirror = state.mirror.lock().unwrap();
         let sequence = mirror_output_sequence.load(Ordering::Acquire);
         let paint = mirror.rehydrate();
-        let frame = mirror.frame();
+        let frame = FrameReply::full(&mirror.frame(), sequence);
         let alt_active = mirror.alt_active();
         drop(mirror);
         drop(registry);
@@ -341,7 +334,7 @@ impl Runtime {
     }
 
     fn status(&self) -> Value {
-        result_ok(status_snapshot(&self.registry))
+        result_ok(status_snapshot(&self.registry, self.capabilities))
     }
 
     fn wait_size(&self, request: &Value) -> Value {
@@ -399,31 +392,7 @@ impl Runtime {
     }
 
     fn frame(&self, request: &Value) -> Value {
-        let Some(key) = pane_key(request) else {
-            return result_error("INVALID_PARAMS", "window and pane are required");
-        };
-        let (mirror, mirror_output_sequence, signal) = {
-            let registry = self.registry.lock().unwrap();
-            let Some(state) = registry.get(&key) else {
-                return result_error("NOT_FOUND", "no live terminal-state mirror for this key");
-            };
-            (
-                state.mirror.clone(),
-                state.mirror_output_sequence.clone(),
-                state.frame_signal.clone(),
-            )
-        };
-        if let Some(after) = request.get("afterSequence").and_then(Value::as_u64) {
-            let (sequence, ready) = &*signal;
-            let mut sequence = sequence.lock().unwrap();
-            while *sequence < after {
-                sequence = ready.wait(sequence).unwrap();
-            }
-        }
-        match frame_snapshot(&mirror, &mirror_output_sequence) {
-            Ok(snapshot) => result_ok(snapshot),
-            Err(error) => result_error("FRAME_FAILED", &error.to_string()),
-        }
+        frame_request(&self.registry, request)
     }
 
     fn archived(&self, request: &Value) -> Value {
@@ -440,7 +409,7 @@ impl Runtime {
         match store.read(window, &pane) {
             Ok(Some(checkpoint)) => result_ok(json!({
                 "paint": B64.encode(&checkpoint.paint),
-                "frame": checkpoint.frame,
+                "frame": FrameReply::full(&checkpoint.frame, checkpoint.sequence),
                 "generation": checkpoint.generation,
                 "uptoSeq": checkpoint.sequence,
             })),
@@ -524,9 +493,99 @@ impl Runtime {
     }
 }
 
+fn frame_timeout_ms(request: &Value) -> u64 {
+    request
+        .get("timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(FRAME_TIMEOUT_DEFAULT_MS)
+        .min(FRAME_TIMEOUT_MAX_MS)
+}
+
+/// `^[a-z0-9._#-]{1,64}$`
+fn valid_subscriber(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'#' | b'-')
+        })
+}
+
+fn wait_for_sequence(signal: &(Mutex<u64>, Condvar), wanted: u64, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let (sequence, ready) = signal;
+    let mut sequence = sequence.lock().unwrap();
+    while *sequence < wanted {
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let (next, _) = ready.wait_timeout(sequence, deadline - now).unwrap();
+        sequence = next;
+    }
+    true
+}
+
+fn frame_request(registry: &Registry, request: &Value) -> Value {
+    let Some(key) = pane_key(request) else {
+        return result_error("INVALID_PARAMS", "window and pane are required");
+    };
+    let Some(subscriber) = request
+        .get("subscriber")
+        .and_then(Value::as_str)
+        .filter(|value| valid_subscriber(value))
+    else {
+        return result_error(
+            "INVALID_PARAMS",
+            "subscriber is required and must match ^[a-z0-9._#-]{1,64}$",
+        );
+    };
+    let offset = request.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let after = request.get("afterSequence").and_then(Value::as_u64);
+    let timeout = Duration::from_millis(frame_timeout_ms(request));
+    let (mirror, progress, signal, subscribers) = {
+        let registry = registry.lock().unwrap();
+        let Some(state) = registry.get(&key) else {
+            return result_error("NOT_FOUND", "no live terminal-state mirror for this key");
+        };
+        (
+            state.mirror.clone(),
+            state.mirror_output_sequence.clone(),
+            state.frame_signal.clone(),
+            state.frame_subscribers.clone(),
+        )
+    };
+    if let Some(after) = after
+        && !wait_for_sequence(&signal, after, timeout)
+    {
+        return result_error(
+            "TIMEOUT",
+            "terminal output sequence was not applied before the deadline",
+        );
+    }
+    let (frame, output_sequence) = {
+        let mirror = mirror.lock().unwrap();
+        let offset = if mirror.alt_active() {
+            0
+        } else {
+            usize::try_from(offset)
+                .unwrap_or(usize::MAX)
+                .min(mirror.history_size())
+        };
+        (mirror.frame_at(offset), progress.load(Ordering::Acquire))
+    };
+    let mut subscribers = subscribers.lock().unwrap();
+    let (reply, baseline) = delta(subscribers.baseline(subscriber), &frame, output_sequence);
+    subscribers.record(subscriber, baseline);
+    match serde_json::to_value(reply) {
+        Ok(value) => result_ok(value),
+        Err(error) => result_error("FRAME_FAILED", &error.to_string()),
+    }
+}
+
 fn consume_observations(
     mut observations: ObservationStream,
-    mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    mirror: SharedMirror,
     registry: Registry,
     key: PaneKey,
     checkpoint: Option<Sender<CheckpointEvent>>,
@@ -541,7 +600,7 @@ fn consume_observations(
 
 fn apply_observation(
     frame: ObservationFrame,
-    mirror: &Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    mirror: &SharedMirror,
     registry: &Registry,
     key: &PaneKey,
     checkpoint: Option<&Sender<CheckpointEvent>>,
@@ -640,19 +699,6 @@ fn apply_observation(
     }
 }
 
-fn frame_snapshot(
-    mirror: &Arc<Mutex<Box<dyn TerminalStateMirror>>>,
-    output_sequence: &AtomicU64,
-) -> Result<Value, serde_json::Error> {
-    let mirror = mirror.lock().unwrap();
-    let frame = mirror.frame();
-    let output_sequence = output_sequence.load(Ordering::Acquire);
-    Ok(json!({
-        "frame": frame,
-        "outputSequence": output_sequence,
-    }))
-}
-
 enum CheckpointEvent {
     Dirty { generation: u64, sequence: u64 },
     Final { generation: u64, sequence: u64 },
@@ -662,7 +708,7 @@ fn start_checkpoint_worker(
     store: Arc<CheckpointStore>,
     sidecar_id: &'static str,
     key: PaneKey,
-    mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    mirror: SharedMirror,
 ) -> Sender<CheckpointEvent> {
     let (send, receive) = mpsc::channel();
     std::thread::Builder::new()
@@ -675,7 +721,7 @@ fn start_checkpoint_worker(
 fn checkpoint_worker(
     store: Arc<CheckpointStore>,
     key: PaneKey,
-    mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>>,
+    mirror: SharedMirror,
     receive: Receiver<CheckpointEvent>,
 ) {
     while let Ok(first) = receive.recv() {
@@ -751,17 +797,17 @@ fn serve_connection(connection: Stream, runtime: &Runtime, token: &str) -> io::R
                     json!({
                         "protocol": proto::CONTROL_PROTOCOL,
                         "identity": runtime.sidecar_id,
-                    "commands": { "commands": [
-                        { "name": "terminal.prepareSession", "owner": "plugin" },
+                        "commands": { "commands": [
+                            { "name": "terminal.prepareSession", "owner": "plugin" },
                             { "name": "terminal.ensureSession", "owner": "plugin" },
                             { "name": "terminal.rehydrate", "owner": "plugin" },
                             { "name": "terminal.resize", "owner": "plugin" },
                             { "name": "terminal.waitSize", "owner": "plugin" },
-                            { "name": "terminal.status", "owner": "plugin" }
-                            ,{ "name": "terminal.archived", "owner": "plugin" }
-                            ,{ "name": "terminal.archive", "owner": "plugin" }
-                            ,{ "name": "terminal.retire", "owner": "plugin" }
-                            ,{ "name": "terminal.frame", "owner": "plugin" }
+                            { "name": "terminal.status", "owner": "plugin" },
+                            { "name": "terminal.archived", "owner": "plugin" },
+                            { "name": "terminal.archive", "owner": "plugin" },
+                            { "name": "terminal.retire", "owner": "plugin" },
+                            { "name": "terminal.frame", "owner": "plugin" }
                         ], "unserved": [] },
                         "language": "en", "languages": ["en"]
                     }),
@@ -836,7 +882,10 @@ fn reclaim_stale_service_socket(path: &Path) -> io::Result<()> {
         ));
     }
     let address = path.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "service socket path is not UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "service socket path is not UTF-8",
+        )
     })?;
     let name = crate::transport_name::local_name(address)?;
     match Stream::connect(name) {
@@ -994,13 +1043,16 @@ impl ServiceClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mirror::TerminalFrame;
+    use crate::mirror::{FrameLine, FrameRun, TerminalFrame, TerminalModes};
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[cfg(unix)]
     fn socket_test_root() -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let root = Path::new("/tmp").join(format!("sk{:x}{:x}", std::process::id(), nonce));
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -1030,6 +1082,32 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn empty_frame(offset: usize, history: usize, alt: bool) -> TerminalFrame {
+        TerminalFrame {
+            cols: 4,
+            rows: 1,
+            cursor: (0, 0),
+            cursor_visible: true,
+            alt_active: alt,
+            history_size: history,
+            offset,
+            modes: TerminalModes::default(),
+            lines: vec![FrameLine {
+                y: 0,
+                wrapped: false,
+                runs: vec![FrameRun {
+                    text: "row".into(),
+                    fg: "default".into(),
+                    bg: "default".into(),
+                    attrs: 0,
+                    n: 3,
+                    wide: false,
+                    link: None,
+                }],
+            }],
+        }
+    }
+
     struct BlockingMirror {
         entered: Sender<()>,
         release: Receiver<()>,
@@ -1047,15 +1125,17 @@ mod tests {
         fn cold_paint(&self) -> Vec<u8> {
             vec![]
         }
-        fn frame(&self) -> TerminalFrame {
-            TerminalFrame {
-                cols: 1,
-                rows: 1,
-                cursor: (0, 0),
-                cursor_visible: true,
-                alt_active: false,
-                lines: vec![],
-            }
+        fn frame_at(&self, offset: usize) -> TerminalFrame {
+            empty_frame(offset, 0, false)
+        }
+        fn history_size(&self) -> usize {
+            0
+        }
+        fn modes(&self) -> TerminalModes {
+            TerminalModes::default()
+        }
+        fn capabilities(&self) -> MirrorCapabilities {
+            MirrorCapabilities::default()
         }
         fn alt_active(&self) -> bool {
             false
@@ -1063,6 +1143,84 @@ mod tests {
         fn suppressed_replies(&self) -> u64 {
             0
         }
+    }
+
+    /// A mirror with a fixed screen; echoes the offset it is asked for so clamping is observable.
+    struct ScriptedMirror {
+        history: usize,
+        alt: bool,
+    }
+
+    impl TerminalStateMirror for ScriptedMirror {
+        fn feed(&mut self, _bytes: &[u8]) {}
+        fn resize(&mut self, _cols: u16, _rows: u16) {}
+        fn rehydrate(&self) -> Vec<u8> {
+            vec![]
+        }
+        fn cold_paint(&self) -> Vec<u8> {
+            vec![]
+        }
+        fn frame_at(&self, offset: usize) -> TerminalFrame {
+            empty_frame(offset, self.history, self.alt)
+        }
+        fn history_size(&self) -> usize {
+            self.history
+        }
+        fn modes(&self) -> TerminalModes {
+            TerminalModes::default()
+        }
+        fn capabilities(&self) -> MirrorCapabilities {
+            MirrorCapabilities::default()
+        }
+        fn alt_active(&self) -> bool {
+            self.alt
+        }
+        fn suppressed_replies(&self) -> u64 {
+            0
+        }
+    }
+
+    fn test_registry(
+        mirror: &SharedMirror,
+        progress: Arc<AtomicU64>,
+        size: (u16, u16),
+    ) -> (PaneKey, Registry) {
+        let key = (Some("window".to_string()), "pane".to_string());
+        let start = progress.load(Ordering::Acquire);
+        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
+            key.clone(),
+            SessionState {
+                session: 1,
+                generation: 1,
+                window: key.0.clone(),
+                pane: key.1.clone(),
+                mirror: mirror.clone(),
+                mirror_output_sequence: progress,
+                source_event_sequence: 0,
+                source_output_sequence: 0,
+                gaps: 0,
+                alt_active: false,
+                suppressed_replies: 0,
+                frame_signal: Arc::new((Mutex::new(start), Condvar::new())),
+                size_signal: Arc::new((Mutex::new(size), Condvar::new())),
+                frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
+            },
+        )])));
+        (key, registry)
+    }
+
+    fn scripted(history: usize, alt: bool) -> SharedMirror {
+        Arc::new(Mutex::new(Box::new(ScriptedMirror { history, alt })))
+    }
+
+    fn frame_of(registry: &Registry, subscriber: &str, extra: Value) -> Value {
+        let mut request = json!({ "window": "window", "pane": "pane", "subscriber": subscriber });
+        if let (Some(target), Some(source)) = (request.as_object_mut(), extra.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        frame_request(registry, &request)
     }
 
     #[test]
@@ -1086,30 +1244,11 @@ mod tests {
     fn slow_engine_feed_does_not_hold_the_session_registry() {
         let (entered_send, entered_receive) = mpsc::channel();
         let (release_send, release_receive) = mpsc::channel();
-        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
-            Arc::new(Mutex::new(Box::new(BlockingMirror {
-                entered: entered_send,
-                release: release_receive,
-            })));
-        let key = (Some("window".to_string()), "pane".to_string());
-        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
-            key.clone(),
-            SessionState {
-                session: 1,
-                generation: 1,
-                window: key.0.clone(),
-                pane: key.1.clone(),
-                mirror: mirror.clone(),
-                mirror_output_sequence: Arc::new(AtomicU64::new(0)),
-                source_event_sequence: 0,
-                source_output_sequence: 0,
-                gaps: 0,
-                alt_active: false,
-                suppressed_replies: 0,
-                frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
-                size_signal: Arc::new((Mutex::new((1, 1)), Condvar::new())),
-            },
-        )])));
+        let mirror: SharedMirror = Arc::new(Mutex::new(Box::new(BlockingMirror {
+            entered: entered_send,
+            release: release_receive,
+        })));
+        let (key, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (1, 1));
         let applying = {
             let registry = registry.clone();
             let mirror = mirror.clone();
@@ -1136,7 +1275,14 @@ mod tests {
         );
         let (status_send, status_receive) = mpsc::channel();
         let status_registry = registry.clone();
-        std::thread::spawn(move || status_send.send(status_snapshot(&status_registry)).unwrap());
+        std::thread::spawn(move || {
+            status_send
+                .send(status_snapshot(
+                    &status_registry,
+                    MirrorCapabilities::default(),
+                ))
+                .unwrap()
+        });
         assert!(
             status_receive
                 .recv_timeout(Duration::from_millis(100))
@@ -1151,31 +1297,12 @@ mod tests {
     fn mirror_snapshot_and_output_sequence_advance_atomically() {
         let (entered_send, entered_receive) = mpsc::channel();
         let (release_send, release_receive) = mpsc::channel();
-        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
-            Arc::new(Mutex::new(Box::new(BlockingMirror {
-                entered: entered_send,
-                release: release_receive,
-            })));
+        let mirror: SharedMirror = Arc::new(Mutex::new(Box::new(BlockingMirror {
+            entered: entered_send,
+            release: release_receive,
+        })));
         let progress = Arc::new(AtomicU64::new(0));
-        let key = (Some("window".to_string()), "pane".to_string());
-        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
-            key.clone(),
-            SessionState {
-                session: 1,
-                generation: 1,
-                window: key.0.clone(),
-                pane: key.1.clone(),
-                mirror: mirror.clone(),
-                mirror_output_sequence: progress.clone(),
-                source_event_sequence: 0,
-                source_output_sequence: 0,
-                gaps: 0,
-                alt_active: false,
-                suppressed_replies: 0,
-                frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
-                size_signal: Arc::new((Mutex::new((1, 1)), Condvar::new())),
-            },
-        )])));
+        let (key, registry) = test_registry(&mirror, progress.clone(), (1, 1));
         let applying = {
             let mirror = mirror.clone();
             let registry = registry.clone();
@@ -1215,30 +1342,11 @@ mod tests {
     fn resize_observation_releases_exact_size_waiters() {
         let (entered_send, _entered_receive) = mpsc::channel();
         let (_release_send, release_receive) = mpsc::channel();
-        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
-            Arc::new(Mutex::new(Box::new(BlockingMirror {
-                entered: entered_send,
-                release: release_receive,
-            })));
-        let key = (Some("window".to_string()), "pane".to_string());
-        let registry: Registry = Arc::new(Mutex::new(HashMap::from([(
-            key.clone(),
-            SessionState {
-                session: 1,
-                generation: 1,
-                window: key.0.clone(),
-                pane: key.1.clone(),
-                mirror: mirror.clone(),
-                mirror_output_sequence: Arc::new(AtomicU64::new(0)),
-                source_event_sequence: 0,
-                source_output_sequence: 0,
-                gaps: 0,
-                alt_active: false,
-                suppressed_replies: 0,
-                frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
-                size_signal: Arc::new((Mutex::new((90, 24)), Condvar::new())),
-            },
-        )])));
+        let mirror: SharedMirror = Arc::new(Mutex::new(Box::new(BlockingMirror {
+            entered: entered_send,
+            release: release_receive,
+        })));
+        let (key, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (90, 24));
         let waiting = {
             let signal = registry
                 .lock()
@@ -1267,7 +1375,7 @@ mod tests {
             &key,
             None,
         ));
-        let status = status_snapshot(&registry);
+        let status = status_snapshot(&registry, MirrorCapabilities::default());
         let session = &status["sessions"][0];
         assert_eq!(session["cols"], 54);
         assert_eq!(session["rows"], 24);
@@ -1277,16 +1385,103 @@ mod tests {
 
     #[test]
     fn frame_response_carries_the_exact_applied_output_sequence() {
-        let (entered_send, _entered_receive) = mpsc::channel();
-        let (_release_send, release_receive) = mpsc::channel();
-        let mirror: Arc<Mutex<Box<dyn TerminalStateMirror>>> =
-            Arc::new(Mutex::new(Box::new(BlockingMirror {
-                entered: entered_send,
-                release: release_receive,
-            })));
-        let progress = AtomicU64::new(37);
-        let response = frame_snapshot(&mirror, &progress).unwrap();
-        assert_eq!(response["outputSequence"], 37);
-        assert!(response.get("frame").is_some());
+        let mirror = scripted(0, false);
+        let (_, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(37)), (4, 1));
+        let response = frame_of(&registry, "viewer", json!({}));
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(response["data"]["outputSequence"], 37);
+        assert_eq!(response["data"]["full"], true);
+        assert_eq!(response["data"]["lines"][0]["runs"][0]["text"], "row");
+        assert!(response["data"].get("output_sequence").is_none());
+    }
+
+    #[test]
+    fn frame_requires_a_subscriber_and_clamps_timeout() {
+        let mirror = scripted(0, false);
+        let (_, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (4, 1));
+        let missing = frame_request(&registry, &json!({ "window": "window", "pane": "pane" }));
+        assert_eq!(missing["code"], "INVALID_PARAMS");
+        for bad in ["Bad Name", "", "a/b", &"x".repeat(65)] {
+            let refused = frame_of(&registry, bad, json!({}));
+            assert_eq!(refused["code"], "INVALID_PARAMS", "{bad:?}");
+        }
+        let accepted = frame_of(&registry, "viewer.1#a-b_c", json!({}));
+        assert_eq!(accepted["ok"], true, "{accepted}");
+        assert_eq!(frame_timeout_ms(&json!({})), 10_000);
+        assert_eq!(frame_timeout_ms(&json!({ "timeoutMs": 99_999 })), 30_000);
+        assert_eq!(frame_timeout_ms(&json!({ "timeoutMs": 0 })), 0);
+        assert_eq!(frame_timeout_ms(&json!({ "timeoutMs": 250 })), 250);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn frame_times_out_with_TIMEOUT_when_after_sequence_is_not_reached() {
+        let mirror = scripted(0, false);
+        let (_, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (4, 1));
+        let started = Instant::now();
+        let response = frame_of(
+            &registry,
+            "viewer",
+            json!({ "afterSequence": 5, "timeoutMs": 20 }),
+        );
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["code"], "TIMEOUT");
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        let reached = frame_of(&registry, "viewer", json!({ "afterSequence": 0 }));
+        assert_eq!(reached["ok"], true, "{reached}");
+    }
+
+    #[test]
+    fn frame_offset_is_clamped_to_history_and_zero_in_alt() {
+        let primary = scripted(5, false);
+        let (_, registry) = test_registry(&primary, Arc::new(AtomicU64::new(0)), (4, 1));
+        assert_eq!(
+            frame_of(&registry, "v", json!({ "offset": 99 }))["data"]["offset"],
+            5
+        );
+        assert_eq!(
+            frame_of(&registry, "v", json!({ "offset": 3 }))["data"]["offset"],
+            3
+        );
+        assert_eq!(frame_of(&registry, "v", json!({}))["data"]["offset"], 0);
+        assert_eq!(
+            frame_of(&registry, "v", json!({}))["data"]["historySize"],
+            5
+        );
+
+        let alt = scripted(5, true);
+        let (_, registry) = test_registry(&alt, Arc::new(AtomicU64::new(0)), (4, 1));
+        let reply = frame_of(&registry, "v", json!({ "offset": 3 }));
+        assert_eq!(reply["data"]["offset"], 0);
+        assert_eq!(reply["data"]["altActive"], true);
+    }
+
+    #[test]
+    fn frame_baselines_are_evicted_beyond_eight_subscribers() {
+        let mirror = scripted(0, false);
+        let (_, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (4, 1));
+        for index in 0..9 {
+            let first = frame_of(&registry, &format!("s{index}"), json!({}));
+            assert_eq!(
+                first["data"]["full"], true,
+                "s{index} first request is full"
+            );
+        }
+        assert_eq!(frame_of(&registry, "s8", json!({}))["data"]["full"], false);
+        let evicted = frame_of(&registry, "s0", json!({}));
+        assert_eq!(evicted["data"]["full"], true, "s0 lost its baseline");
+        assert_eq!(frame_of(&registry, "s2", json!({}))["data"]["full"], false);
+        let unchanged = frame_of(&registry, "s2", json!({}));
+        assert!(unchanged["data"]["lines"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_reports_capabilities() {
+        let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
+        let status = status_snapshot(&registry, MirrorCapabilities { hyperlinks: true });
+        assert_eq!(status["capabilities"]["hyperlinks"], true);
+        assert_eq!(status["sessions"], json!([]));
+        let none = status_snapshot(&registry, MirrorCapabilities::default());
+        assert_eq!(none["capabilities"]["hyperlinks"], false);
     }
 }

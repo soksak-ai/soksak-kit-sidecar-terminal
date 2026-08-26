@@ -137,19 +137,25 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, sidecar_id:
             .request(proto::request(
                 "frame",
                 "terminal.frame",
-                json!({ "window": window, "pane": pane, "afterSequence": data["uptoSeq"] }),
+                json!({
+                    "window": window, "pane": pane, "subscriber": "integration",
+                    "afterSequence": data["uptoSeq"],
+                }),
             ))
             .unwrap(),
     );
+    assert_eq!(frame["full"], true, "a subscriber's first frame is full");
+    assert_eq!(frame["outputSequence"], data["uptoSeq"]);
     let frame_text = frame["lines"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(|line| {
-            line.as_array()
+            line["runs"]
+                .as_array()
                 .unwrap()
                 .iter()
-                .filter_map(|cell| cell["text"].as_str())
+                .filter_map(|run| run["text"].as_str())
         })
         .collect::<String>();
     assert!(

@@ -1,7 +1,7 @@
 use std::fs;
 
 use soksak_kit_sidecar_terminal::checkpoint::CheckpointStore;
-use soksak_kit_sidecar_terminal::mirror::TerminalFrame;
+use soksak_kit_sidecar_terminal::mirror::{TerminalFrame, TerminalModes};
 
 fn key() -> [u8; 32] {
     [0x42; 32]
@@ -14,6 +14,9 @@ fn frame() -> TerminalFrame {
         cursor: (0, 0),
         cursor_visible: true,
         alt_active: false,
+        history_size: 0,
+        offset: 0,
+        modes: TerminalModes::default(),
         lines: vec![],
     }
 }

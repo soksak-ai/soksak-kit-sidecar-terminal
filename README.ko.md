@@ -21,8 +21,11 @@ gate는 그 거부로 실패합니다.
 
 Live handoff snapshot은 mirror paint와 절대 PTY output sequence를 원자적으로 게시합니다. 따라서
 `pty.attachLease`로 이어질 때 byte를 중복 재생하거나 누락하지 않습니다.
-`terminal.frame`은 frame과 해당 mirror가 실제 적용한 절대 출력 순서를 같은 lock에서
-게시하므로 호출자가 요청 좌표로 렌더 진행을 추정하지 않습니다.
+`terminal.frame`은 viewport를 run 단위로, 해당 mirror가 실제 적용한 절대 출력 순서와 같은 lock에서
+게시하므로 호출자가 요청 좌표로 렌더 진행을 추정하지 않습니다. `subscriber`마다 처음에는 전체
+화면을, 이후에는 바뀐 행만 받습니다. 크기 변경·offset 변경·alternate screen 전환은 다시 전체
+화면을 강제합니다. `offset`은 viewport를 history 쪽으로 넘기며 `historySize`로 clamp됩니다.
+`terminal.status`는 engine의 `capabilities.hyperlinks`를 보고합니다.
 
 ## 검증
 
