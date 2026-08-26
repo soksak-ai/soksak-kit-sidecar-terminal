@@ -9,8 +9,11 @@ gap 수를 반환합니다. 호출자는 이 값으로 처음 진행하지 않�
 
 Terminal sidecar owner gate는 `scripts/install_pty_release.py`로
 `soksak-sidecar-pty@0.0.6`의 target별 immutable release를 설치합니다. Installer는 owner release
-identity, source commit, artifact size와 SHA-256을 검사하고 regular file만 압축 해제합니다. Core
-checkout을 찾거나 PTY provider를 source에서 빌드하지 않습니다.
+identity, source commit, artifact size와 SHA-256을 검사하고 regular file만 압축 해제합니다.
+`release.json`은 artifact를 bare `file` 이름으로 지정하며 installer는
+`https://github.com/soksak-ai/soksak-sidecar-pty/releases/download/v0.0.6/<file>`에서 내려받고
+`url` key가 있는 문서를 거부합니다. Core checkout을 찾거나 PTY provider를 source에서 빌드하지
+않습니다.
 
 Live handoff snapshot은 mirror paint와 절대 PTY output sequence를 원자적으로 게시합니다. 따라서
 `pty.attachLease`로 이어질 때 byte를 중복 재생하거나 누락하지 않습니다.

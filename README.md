@@ -10,7 +10,10 @@ The kit defines no terminal semantics and selects no engine.
 Terminal-sidecar owner gates install `soksak-sidecar-pty@0.0.6` through
 `scripts/install_pty_release.py`. The installer accepts an explicit release target, verifies the
 owner release identity, source commit, artifact size and SHA-256, and extracts regular files only.
-It never discovers a Core checkout or builds a PTY provider from source.
+`release.json` names each artifact by bare `file`; the installer downloads
+`https://github.com/soksak-ai/soksak-sidecar-pty/releases/download/v0.0.6/<file>` and refuses a
+document that carries a `url` key. It never discovers a Core checkout or builds a PTY provider from
+source.
 
 Live handoff snapshots publish mirror paint and its absolute PTY output sequence atomically. A
 snapshot can therefore be followed by `pty.attachLease` without replaying or dropping bytes.

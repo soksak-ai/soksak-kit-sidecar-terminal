@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import io
 import json
+import re
 import stat
 import tarfile
 import urllib.request
@@ -14,6 +15,9 @@ REPOSITORY = "https://github.com/soksak-ai/soksak-sidecar-pty"
 COMMIT = "0ddb87e1aadc94aa83ca751a80f55c84c5835843"
 RELEASE_ROOT = f"{REPOSITORY}/releases/download/v{VERSION}"
 RELEASE_DOCUMENT = f"{RELEASE_ROOT}/release.json"
+# Bare filename inside the release directory. Same pattern as RELEASE_FILE_RE in
+# @soksak-ai/plugin-spec release-primitives.ts.
+RELEASE_FILE_RE = re.compile(r"^(?!\.\.?$)[A-Za-z0-9._-]+$")
 
 
 def download(url: str, limit: int) -> bytes:
@@ -26,7 +30,25 @@ def download(url: str, limit: int) -> bytes:
     return body
 
 
+def refuse_url(value: object, path: str = "release") -> None:
+    # A release document names files, never locations. Locations are derived from
+    # (kind, id, version) by the consumer; a url key anywhere is a foreign document.
+    if isinstance(value, dict):
+        if "url" in value:
+            raise ValueError(f"PTY release names a url at {path}")
+        for key, item in value.items():
+            refuse_url(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            refuse_url(item, f"{path}[{index}]")
+
+
+def artifact_url(artifact: dict) -> str:
+    return f"{RELEASE_ROOT}/{artifact['file']}"
+
+
 def select_artifact(document: dict, target: str) -> dict:
+    refuse_url(document)
     if document.get("kind") != "sidecar" or document.get("id") != SIDECAR_ID or document.get("version") != VERSION:
         raise ValueError("PTY release identity is invalid")
     if document.get("source") != {"repository": REPOSITORY, "commit": COMMIT}:
@@ -39,8 +61,8 @@ def select_artifact(document: dict, target: str) -> dict:
     artifact = matches[0]
     if artifact.get("format") != "tar.gz" or artifact.get("manifest") != "sidecar.json":
         raise ValueError("PTY artifact format is invalid")
-    if not str(artifact.get("url", "")).startswith(RELEASE_ROOT + "/"):
-        raise ValueError("PTY artifact URL is outside its release")
+    if not isinstance(artifact.get("file"), str) or not RELEASE_FILE_RE.match(artifact["file"]):
+        raise ValueError("PTY artifact file is not a bare filename")
     if not isinstance(artifact.get("size"), int) or artifact["size"] <= 0:
         raise ValueError("PTY artifact size is invalid")
     digest = artifact.get("sha256", "")
@@ -83,7 +105,7 @@ def extract_verified_archive(body: bytes, destination: Path, target: str) -> Pat
 def install(target: str, destination: Path) -> Path:
     document = json.loads(download(RELEASE_DOCUMENT, 4 << 20))
     artifact = select_artifact(document, target)
-    body = download(artifact["url"], artifact["size"])
+    body = download(artifact_url(artifact), artifact["size"])
     if len(body) != artifact["size"] or hashlib.sha256(body).hexdigest() != artifact["sha256"]:
         raise ValueError("PTY artifact bytes do not match release.json")
     return extract_verified_archive(body, destination, target)
