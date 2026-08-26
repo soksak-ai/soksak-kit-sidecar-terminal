@@ -15,6 +15,10 @@ owner release identity, source commit, artifact size and SHA-256, and extracts r
 document that carries a `url` key. It never discovers a Core checkout or builds a PTY provider from
 source.
 
+The pinned `soksak-sidecar-pty@0.0.6` was published with `url` keys in its release document, so the
+installer refuses it; the pin moves to the first PTY release published without `url` (0.0.8 or later),
+and until then the owner gate that installs the PTY fails by that refusal.
+
 Live handoff snapshots publish mirror paint and its absolute PTY output sequence atomically. A
 snapshot can therefore be followed by `pty.attachLease` without replaying or dropping bytes.
 `terminal.frame` publishes the frame and the exact output sequence applied to that mirror under the

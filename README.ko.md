@@ -15,6 +15,10 @@ identity, source commit, artifact size와 SHA-256을 검사하고 regular file�
 `url` key가 있는 문서를 거부합니다. Core checkout을 찾거나 PTY provider를 source에서 빌드하지
 않습니다.
 
+고정된 `soksak-sidecar-pty@0.0.6`의 release document는 `url` key를 가진 채 공개되었으므로 installer는 이를
+거부합니다. 핀은 `url` 없이 공개되는 첫 PTY release(0.0.8 이상)로 옮기며, 그 전까지 PTY를 설치하는 owner
+gate는 그 거부로 실패합니다.
+
 Live handoff snapshot은 mirror paint와 절대 PTY output sequence를 원자적으로 게시합니다. 따라서
 `pty.attachLease`로 이어질 때 byte를 중복 재생하거나 누락하지 않습니다.
 `terminal.frame`은 frame과 해당 mirror가 실제 적용한 절대 출력 순서를 같은 lock에서
