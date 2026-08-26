@@ -583,6 +583,17 @@ fn frame_request(registry: &Registry, request: &Value) -> Value {
     }
 }
 
+fn remove_session_if_owner(registry: &Registry, key: &PaneKey, mirror: &SharedMirror) -> bool {
+    let mut sessions = registry.lock().unwrap();
+    let owned = sessions
+        .get(key)
+        .is_some_and(|state| Arc::ptr_eq(&state.mirror, mirror));
+    if owned {
+        sessions.remove(key);
+    }
+    owned
+}
+
 fn consume_observations(
     mut observations: ObservationStream,
     mirror: SharedMirror,
@@ -595,7 +606,7 @@ fn consume_observations(
             break;
         }
     }
-    registry.lock().unwrap().remove(&key);
+    remove_session_if_owner(&registry, &key, &mirror);
 }
 
 fn apply_observation(
@@ -1221,6 +1232,22 @@ mod tests {
             }
         }
         frame_request(registry, &request)
+    }
+
+    #[test]
+    fn ended_consumer_cannot_remove_a_replacement_mirror() {
+        let old = scripted(0, false);
+        let replacement = scripted(0, false);
+        let (key, registry) = test_registry(&old, Arc::new(AtomicU64::new(0)), (1, 1));
+        registry.lock().unwrap().get_mut(&key).unwrap().mirror = replacement.clone();
+
+        assert!(!remove_session_if_owner(&registry, &key, &old));
+        assert!(Arc::ptr_eq(
+            &registry.lock().unwrap().get(&key).unwrap().mirror,
+            &replacement,
+        ));
+        assert!(remove_session_if_owner(&registry, &key, &replacement));
+        assert!(!registry.lock().unwrap().contains_key(&key));
     }
 
     #[test]
