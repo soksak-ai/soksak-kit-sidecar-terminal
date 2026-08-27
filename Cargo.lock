@@ -338,6 +338,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "soksak-contract-surface"
+version = "0.0.1"
+source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=e7a697ca8f10af00c846b88aaa078e7a2023eb9c#e7a697ca8f10af00c846b88aaa078e7a2023eb9c"
+
+[[package]]
 name = "soksak-kit-sidecar-terminal"
 version = "0.0.14"
 dependencies = [
@@ -350,6 +355,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "soksak-contract-control",
+ "soksak-contract-surface",
 ]
 
 [[package]]
