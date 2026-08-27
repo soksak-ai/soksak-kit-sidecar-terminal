@@ -1357,9 +1357,12 @@ mod tests {
 
         let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, true);
         restored.lock().unwrap().feed(b"fresh-shell");
+        let mut expected = b"archived-screen\n".to_vec();
+        expected.extend_from_slice(&b"\r\n".repeat(24));
+        expected.extend_from_slice(b"fresh-shell");
         assert_eq!(
             restored.lock().unwrap().rehydrate(),
-            b"archived-screen\nfresh-shell"
+            expected,
         );
 
         let warm = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, false);
