@@ -4,7 +4,7 @@
 //! application, rendering belongs here (P3).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -41,6 +41,10 @@ struct PaneControl {
     overlay: Mutex<OverlayState>,
     returns: Mutex<Vec<u8>>,
     signal: FrameSignal,
+    paints: AtomicU64,
+    sends: AtomicU64,
+    acquire_misses: AtomicU64,
+    last_error: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -151,6 +155,7 @@ impl SurfaceSessions {
     ) -> Result<Value, SurfaceError> {
         match command {
             "surface.open" => self.open(sidecar_id, request, wiring),
+            "surface.state" => self.state(request),
             "surface.resize" => self.resize(request),
             "surface.setPaused" => self.set_paused(request),
             "surface.preedit" => self.preedit(request),
@@ -179,6 +184,24 @@ impl SurfaceSessions {
             .get(pane)
             .cloned()
             .ok_or_else(|| refuse("NOT_FOUND", format!("no surface renders {pane}")))
+    }
+
+    /// The render counters for one pane: how many paints happened, how many
+    /// frame-ready signals went out, and what failed last.
+    fn state(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let signal_seq = *control.signal.0.lock().unwrap();
+        Ok(json!({
+            "pane": pane,
+            "paints": control.paints.load(Ordering::Acquire),
+            "sends": control.sends.load(Ordering::Acquire),
+            "acquireMisses": control.acquire_misses.load(Ordering::Acquire),
+            "lastError": control.last_error.lock().unwrap().clone(),
+            "signalSequence": signal_seq,
+            "paused": control.paused.load(Ordering::Acquire),
+            "stopped": control.stop.load(Ordering::Acquire),
+        }))
     }
 
     fn open(
@@ -251,6 +274,10 @@ impl SurfaceSessions {
             overlay: Mutex::new(OverlayState::default()),
             returns: Mutex::new(Vec::new()),
             signal,
+            paints: AtomicU64::new(0),
+            sends: AtomicU64::new(0),
+            acquire_misses: AtomicU64::new(0),
+            last_error: Mutex::new(None),
         });
         {
             let mut panes = self.panes.lock().unwrap();
@@ -516,10 +543,14 @@ fn spawn_render_thread(
                         painter.refresh(&**mirror, offset, preedit_value.as_ref());
                     (cursor, visible, refresh)
                 };
+                if let Err(error) = &refresh {
+                    *control.last_error.lock().unwrap() = Some(format!("refresh: {error}"));
+                }
                 if refresh.is_ok() {
                     if let Ok(slot) = ring.acquire() {
                         let (surface, state) = ring.target(slot);
                         if let Ok(rows) = painter.paint_into(surface, state) {
+                            control.paints.fetch_add(1, Ordering::AcqRel);
                             if !rows.is_empty() || last_signaled.is_none() {
                                 let (cell_w, cell_h) = painter.cell_size();
                                 let (width, _) = painter.pixel_size();
@@ -536,7 +567,7 @@ fn spawn_render_thread(
                                     .collect();
                                 let seq = ring.signal(slot);
                                 last_signaled = Some(slot);
-                                let _ = channel.send(
+                                match channel.send(
                                     &Message::FrameReady {
                                         pane: control.pane.clone(),
                                         ring_index: slot as u8,
@@ -547,13 +578,23 @@ fn spawn_render_thread(
                                         damage,
                                     },
                                     &[],
-                                );
+                                ) {
+                                    Ok(()) => {
+                                        control.sends.fetch_add(1, Ordering::AcqRel);
+                                    }
+                                    Err(error) => {
+                                        *control.last_error.lock().unwrap() =
+                                            Some(format!("frameReady send: {error}"));
+                                    }
+                                }
                                 let _ = cell_w;
                             } else {
                                 // Nothing changed for this slot: hand it back.
                                 let _ = ring.released(slot);
                             }
                         }
+                    } else {
+                        control.acquire_misses.fetch_add(1, Ordering::AcqRel);
                     }
                 }
             }

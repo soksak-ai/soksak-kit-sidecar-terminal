@@ -43,6 +43,8 @@ struct SessionState {
     frame_signal: Arc<(Mutex<u64>, Condvar)>,
     size_signal: Arc<(Mutex<(u16, u16)>, Condvar)>,
     frame_subscribers: Arc<Mutex<FrameSubscribers>>,
+    frames_consumed: Arc<AtomicU64>,
+    consumer_note: Arc<Mutex<String>>,
 }
 
 fn new_session_state(
@@ -68,7 +70,28 @@ fn new_session_state(
         frame_signal: Arc::new((Mutex::new(start), Condvar::new())),
         size_signal: Arc::new((Mutex::new((cols, rows)), Condvar::new())),
         frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
+        frames_consumed: Arc::new(AtomicU64::new(0)),
+        consumer_note: Arc::new(Mutex::new(String::from("starting"))),
     }
+}
+
+/// Every panic lands in a file under the home, with its thread and backtrace.
+/// A panicked dispatch thread answers nobody — the file is the only witness.
+fn install_panic_log(home: &Path, sidecar_id: &'static str) {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    let path = home.join(format!("{sidecar_id}-panics.log"));
+    HOOK.call_once(move || {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+            let backtrace = std::backtrace::Backtrace::force_capture();
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path)
+            {
+                let _ = writeln!(file, "== panic on thread {thread}\n{info}\n{backtrace}");
+            }
+            previous(info);
+        }));
+    });
 }
 
 fn status_snapshot(registry: &Registry, capabilities: MirrorCapabilities) -> Value {
@@ -89,6 +112,8 @@ fn status_snapshot(registry: &Registry, capabilities: MirrorCapabilities) -> Val
                 "gaps": state.gaps,
                 "altActive": state.alt_active,
                 "suppressedReplies": state.suppressed_replies,
+                "framesConsumed": state.frames_consumed.load(Ordering::Acquire),
+                "consumerNote": state.consumer_note.lock().unwrap().clone(),
             })
         })
         .collect();
@@ -116,6 +141,7 @@ impl Runtime {
         sidecar_id: &'static str,
         factory: MirrorFactory,
     ) -> io::Result<Self> {
+        install_panic_log(&home, sidecar_id);
         let control = ControlClient::connect(&runtime_root)?;
         let checkpoints = match std::env::var(KEY_ENV) {
             Ok(encoded) if !encoded.is_empty() => Some(Arc::new(CheckpointStore::new(
@@ -184,9 +210,25 @@ impl Runtime {
                     "prepared observer token is absent or expired",
                 );
             };
-            if let Err(error) = observation.receive_opened() {
-                return result_error("OBSERVER_OPEN_FAILED", &error.to_string());
-            }
+            // The opened frame is awaited on a helper thread: a session that
+            // never sends one must not hold this dispatch thread forever.
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                let outcome = observation.receive_opened().map(|()| observation);
+                let _ = sender.send(outcome);
+            });
+            let observation = match receiver.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok(observation)) => observation,
+                Ok(Err(error)) => {
+                    return result_error("OBSERVER_OPEN_FAILED", &error.to_string());
+                }
+                Err(_) => {
+                    return result_error(
+                        "OBSERVER_OPEN_TIMEOUT",
+                        "the pty delivered no opened frame within 10s for this observer",
+                    );
+                }
+            };
             let info = SessionInfo {
                 session: observation.session(),
                 generation: observation.generation(),
@@ -277,8 +319,21 @@ impl Runtime {
         let checkpoint = self.checkpoints.as_ref().map(|store| {
             start_checkpoint_worker(store.clone(), self.sidecar_id, key.clone(), mirror.clone())
         });
+        // The entry can vanish between the insert and this fetch (an old
+        // consumer of the same key exits and removes it). Detached counters
+        // keep the consumer observable; a panic here poisons the registry.
+        let (frames, note) = {
+            let sessions = self.registry.lock().unwrap();
+            match sessions.get(&key) {
+                Some(state) => (state.frames_consumed.clone(), state.consumer_note.clone()),
+                None => (
+                    Arc::new(AtomicU64::new(0)),
+                    Arc::new(Mutex::new(String::from("detached"))),
+                ),
+            }
+        };
         std::thread::spawn(move || {
-            consume_observations(observation, mirror, registry, key, checkpoint)
+            consume_observations(observation, mirror, registry, key, checkpoint, frames, note)
         });
     }
 
@@ -670,12 +725,23 @@ fn consume_observations(
     registry: Registry,
     key: PaneKey,
     checkpoint: Option<Sender<CheckpointEvent>>,
+    frames: Arc<AtomicU64>,
+    note: Arc<Mutex<String>>,
 ) {
-    while let Ok(Some(frame)) = observations.next_frame() {
-        if !apply_observation(frame, &mirror, &registry, &key, checkpoint.as_ref()) {
-            break;
+    *note.lock().unwrap() = String::from("running");
+    let exit = loop {
+        match observations.next_frame() {
+            Ok(Some(frame)) => {
+                frames.fetch_add(1, Ordering::AcqRel);
+                if !apply_observation(frame, &mirror, &registry, &key, checkpoint.as_ref()) {
+                    break String::from("apply refused: the registry no longer holds this pane");
+                }
+            }
+            Ok(None) => break String::from("stream ended: the pty closed the observation connection"),
+            Err(error) => break format!("stream failed: {error}"),
         }
-    }
+    };
+    *note.lock().unwrap() = exit;
     remove_session_if_owner(&registry, &key, &mirror);
 }
 
@@ -1401,6 +1467,8 @@ mod tests {
                 frame_signal: Arc::new((Mutex::new(start), Condvar::new())),
                 size_signal: Arc::new((Mutex::new(size), Condvar::new())),
                 frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
+                frames_consumed: Arc::new(AtomicU64::new(0)),
+                consumer_note: Arc::new(Mutex::new(String::from("starting"))),
             },
         )])));
         (key, registry)
