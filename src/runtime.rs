@@ -1231,6 +1231,18 @@ mod tests {
         fn suppressed_replies(&self) -> u64 {
             0
         }
+        fn cols(&self) -> u16 {
+            0
+        }
+        fn rows(&self) -> u16 {
+            0
+        }
+        fn cursor(&self) -> (usize, usize) {
+            (0, 0)
+        }
+        fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
+            Vec::new()
+        }
     }
 
     /// A mirror with a fixed screen; echoes the offset it is asked for so clamping is observable.
@@ -1272,6 +1284,18 @@ mod tests {
         fn suppressed_replies(&self) -> u64 {
             0
         }
+        fn cols(&self) -> u16 {
+            0
+        }
+        fn rows(&self) -> u16 {
+            0
+        }
+        fn cursor(&self) -> (usize, usize) {
+            (0, 0)
+        }
+        fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
+            Vec::new()
+        }
     }
 
     fn paint_mirror(_cols: u16, _rows: u16) -> Box<dyn TerminalStateMirror> {
@@ -1304,6 +1328,18 @@ mod tests {
         }
         fn suppressed_replies(&self) -> u64 {
             0
+        }
+        fn cols(&self) -> u16 {
+            0
+        }
+        fn rows(&self) -> u16 {
+            0
+        }
+        fn cursor(&self) -> (usize, usize) {
+            (0, 0)
+        }
+        fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
+            Vec::new()
         }
     }
 

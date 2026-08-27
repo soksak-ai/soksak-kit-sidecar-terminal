@@ -24,6 +24,13 @@ pub trait TerminalStateMirror: Send {
     fn capabilities(&self) -> mirror::MirrorCapabilities;
     fn alt_active(&self) -> bool;
     fn suppressed_replies(&self) -> u64;
+    /// Viewport geometry and cells, for the painter that renders this mirror.
+    fn cols(&self) -> u16;
+    fn rows(&self) -> u16;
+    /// `(row, col)`, 0-based, in the viewport.
+    fn cursor(&self) -> (usize, usize);
+    /// The cells of one viewport row; negative rows reach into history.
+    fn line_cells(&self, line: i32) -> Vec<crate::mirror::TerminalCell>;
 }
 
 pub type MirrorFactory = fn(cols: u16, rows: u16) -> Box<dyn TerminalStateMirror>;
