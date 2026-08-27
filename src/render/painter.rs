@@ -23,6 +23,49 @@ impl TargetState {
 use crate::mirror::{TerminalCell, TerminalColor};
 use crate::TerminalStateMirror;
 
+/// An IME composition shown at the cursor. It paints as an overlay and its
+/// bytes never reach the pty — only confirmed text is ever written (P11).
+pub struct Preedit {
+    pub text: String,
+    /// Caret position in characters within the composition.
+    pub cursor: usize,
+}
+
+/// Composition width, engine-agnostic: CJK and Hangul compositions are wide.
+/// The composition never carries box drawing or latin typography, so the
+/// coarse boundary is exact for what actually arrives here.
+fn char_cells(ch: char) -> u16 {
+    if (ch as u32) >= 0x1100 { 2 } else { 1 }
+}
+
+fn preedit_cell(ch: char, wide: bool) -> TerminalCell {
+    TerminalCell {
+        ch,
+        fg: TerminalColor::Default,
+        bg: TerminalColor::Default,
+        bold: false,
+        dim: false,
+        italic: false,
+        underline: true,
+        inverse: false,
+        strikeout: false,
+        hidden: false,
+        wide,
+        spacer: false,
+        wrapline: false,
+        zerowidth: Vec::new(),
+        link: None,
+    }
+}
+
+fn spacer_cell() -> TerminalCell {
+    TerminalCell { spacer: true, ..preedit_cell(' ', false) }
+}
+
+fn blank_cell() -> TerminalCell {
+    TerminalCell { underline: false, ..preedit_cell(' ', false) }
+}
+
 pub struct Painter {
     canvas: Arc<Canvas>,
     atlas: Atlas,
@@ -97,6 +140,7 @@ impl Painter {
         &mut self,
         mirror: &dyn TerminalStateMirror,
         offset: usize,
+        preedit: Option<&Preedit>,
     ) -> Result<(), String> {
         let show_cursor = mirror.modes().show_cursor && offset == 0;
         let cursor = mirror.cursor();
@@ -104,15 +148,30 @@ impl Painter {
             let line = row as i32 - offset as i32;
             let cells = mirror.line_cells(line);
             let mut hash = row_hash(&cells);
-            let cursor_here = show_cursor && cursor.0 == row as usize;
+            let preedit_here =
+                preedit.is_some() && offset == 0 && cursor.0 == row as usize;
+            let cursor_here = show_cursor && cursor.0 == row as usize && !preedit_here;
             if cursor_here {
                 hash ^= 0x9E37_79B9_7F4A_7C15u64.wrapping_add(cursor.1 as u64);
+            }
+            if preedit_here {
+                let composition = preedit.unwrap();
+                hash = hash.wrapping_mul(31).wrapping_add(composition.cursor as u64);
+                for byte in composition.text.as_bytes() {
+                    hash = hash.wrapping_mul(31).wrapping_add(*byte as u64 + 1);
+                }
+                hash = hash.wrapping_mul(31).wrapping_add(cursor.1 as u64 + 1);
             }
             if self.hashes[row as usize] == Some(hash) {
                 continue;
             }
             let cursor_col = if cursor_here { Some(cursor.1) } else { None };
-            self.build_row(row, &cells, cursor_col)?;
+            let overlay = if preedit_here {
+                Some((preedit.unwrap(), cursor.1))
+            } else {
+                None
+            };
+            self.build_row(row, &cells, cursor_col, overlay)?;
             self.hashes[row as usize] = Some(hash);
         }
         Ok(())
@@ -174,7 +233,35 @@ impl Painter {
         row: u16,
         cells: &[TerminalCell],
         cursor_col: Option<usize>,
+        preedit: Option<(&Preedit, usize)>,
     ) -> Result<(), String> {
+        let cols = self.cols as usize;
+        let mut effective: Vec<TerminalCell> = cells.to_vec();
+        effective.truncate(cols);
+        effective.resize(cols, blank_cell());
+        let mut preedit_cursor: Option<usize> = None;
+        if let Some((composition, start)) = preedit {
+            let mut col = start;
+            for (index, ch) in composition.text.chars().enumerate() {
+                if col >= cols {
+                    break;
+                }
+                if index == composition.cursor {
+                    preedit_cursor = Some(col);
+                }
+                let wide = char_cells(ch) == 2;
+                effective[col] = preedit_cell(ch, wide);
+                col += 1;
+                if wide && col < cols {
+                    effective[col] = spacer_cell();
+                    col += 1;
+                }
+            }
+            if preedit_cursor.is_none() {
+                preedit_cursor = Some(col.min(cols - 1));
+            }
+        }
+        let cells = effective.as_slice();
         let ascent = self.ascent;
         let (pt, scale, cell_w) = (self.pt, self.scale, self.cell_w);
         let family = &self.family;
@@ -204,7 +291,7 @@ impl Painter {
         let mut instances = row_instances(cells, cell_w, &self.palette, &mut glyph);
         instances.truncate(self.cols as usize);
         instances.resize(self.cols as usize, background_only(&self.palette));
-        if let Some(col) = cursor_col {
+        if let Some(col) = cursor_col.or(preedit_cursor) {
             if col < instances.len() {
                 let cell = &mut instances[col];
                 std::mem::swap(&mut cell.fg, &mut cell.bg);
