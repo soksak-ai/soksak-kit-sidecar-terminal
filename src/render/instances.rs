@@ -81,10 +81,11 @@ pub struct GlyphPlacement {
 /// still paints; the row redraws when the atlas catches up).
 pub fn row_instances(
     cells: &[TerminalCell],
+    cell_w: u16,
     palette: &Palette,
     glyph: &mut dyn FnMut(&TerminalCell) -> Option<GlyphPlacement>,
 ) -> Vec<GpuCell> {
-    let mut instances = Vec::with_capacity(cells.len());
+    let mut instances: Vec<GpuCell> = Vec::with_capacity(cells.len());
     for cell in cells {
         // Inverse swaps what the colors resolved to — swapping the names would
         // do nothing when both sides are Default.
@@ -106,8 +107,21 @@ pub fn row_instances(
         if cell.wide {
             instance.flags |= FLAG_WIDE;
         }
-        let draws = !cell.spacer && !cell.hidden && cell.ch != ' ';
-        if draws {
+        if cell.spacer {
+            // A wide glyph spills into its spacer: the spacer repeats the
+            // leading cell's coverage shifted one cell left, so the shader
+            // never reads a neighbour's instance.
+            if let Some(leading) = instances.last() {
+                if leading.flags & FLAG_WIDE != 0 && !cell.hidden {
+                    instance.glyph_x = leading.glyph_x;
+                    instance.glyph_y = leading.glyph_y;
+                    instance.glyph_w = leading.glyph_w;
+                    instance.glyph_h = leading.glyph_h;
+                    instance.ink_left = leading.ink_left - cell_w as i16;
+                    instance.ink_top = leading.ink_top;
+                }
+            }
+        } else if !cell.hidden && cell.ch != ' ' {
             if let Some(placed) = glyph(cell) {
                 instance.glyph_x = placed.x;
                 instance.glyph_y = placed.y;
@@ -169,10 +183,11 @@ mod tests {
         wide.wide = true;
         let mut spacer = plain('한');
         spacer.spacer = true;
-        let out = row_instances(&[wide, spacer], &palette(), &mut |_| Some(slot()));
+        let out = row_instances(&[wide, spacer], 12, &palette(), &mut |_| Some(slot()));
         assert_eq!(out[0].glyph_w, 10, "the leading cell carries the glyph");
         assert_ne!(out[0].flags & FLAG_WIDE, 0);
-        assert_eq!(out[1].glyph_w, 0, "the spacer paints no second glyph");
+        assert_eq!(out[1].glyph_x, out[0].glyph_x, "the spacer repeats the same coverage");
+        assert_eq!(out[1].ink_left, out[0].ink_left - 12, "shifted one cell left");
     }
 
     #[test]
@@ -181,7 +196,7 @@ mod tests {
         inverse.inverse = true;
         let mut hidden = plain('x');
         hidden.hidden = true;
-        let out = row_instances(&[inverse, hidden], &palette(), &mut |_| Some(slot()));
+        let out = row_instances(&[inverse, hidden], 12, &palette(), &mut |_| Some(slot()));
         let theme = palette();
         assert_eq!(out[0].fg, theme.bg);
         assert_eq!(out[0].bg, theme.fg);
@@ -199,7 +214,7 @@ mod tests {
 
     #[test]
     fn whitespace_paints_background_without_a_glyph() {
-        let out = row_instances(&[plain(' ')], &palette(), &mut |_| Some(slot()));
+        let out = row_instances(&[plain(' ')], 12, &palette(), &mut |_| Some(slot()));
         assert_eq!(out[0].glyph_w, 0);
         assert_eq!(out[0].bg, palette().bg);
     }
