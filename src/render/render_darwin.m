@@ -14,6 +14,8 @@ struct SoksakCanvas {
     id<MTLComputePipelineState> cellPipeline;
 };
 
+static id<MTLComputePipelineState> soksakBuildCellPipeline(id<MTLDevice> device);
+
 SoksakCanvas *soksak_canvas_create(void) {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (device == nil) {
@@ -23,9 +25,15 @@ SoksakCanvas *soksak_canvas_create(void) {
     if (queue == nil) {
         return NULL;
     }
+    // Built once here so concurrent pane threads never race a lazy build.
+    id<MTLComputePipelineState> cellPipeline = soksakBuildCellPipeline(device);
+    if (cellPipeline == nil) {
+        return NULL;
+    }
     SoksakCanvas *canvas = calloc(1, sizeof(SoksakCanvas));
     canvas->device = device;
     canvas->queue = queue;
+    canvas->cellPipeline = cellPipeline;
     return canvas;
 }
 
@@ -516,21 +524,7 @@ int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurf
     }
     @autoreleasepool {
         if (canvas->cellPipeline == nil) {
-            NSError *error = nil;
-            id<MTLLibrary> library = [canvas->device newLibraryWithSource:kCellShader
-                                                                  options:nil
-                                                                    error:&error];
-            if (library == nil) {
-                return -3;
-            }
-            id<MTLFunction> function = [library newFunctionWithName:@"paintCells"];
-            if (function != nil) {
-                canvas->cellPipeline =
-                    [canvas->device newComputePipelineStateWithFunction:function error:&error];
-            }
-            if (canvas->cellPipeline == nil) {
-                return -4;
-            }
+            return -4;
         }
         id<MTLBuffer> cellBuffer =
             [canvas->device newBufferWithBytes:cells
@@ -814,4 +808,17 @@ int32_t soksak_channel_host_send(SoksakChannelHost *host, uint32_t port, const u
         return -1;
     }
     return soksakMachSend((mach_port_t)port, bytes, len, NULL, NULL, 0);
+}
+
+static id<MTLComputePipelineState> soksakBuildCellPipeline(id<MTLDevice> device) {
+    NSError *error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:kCellShader options:nil error:&error];
+    if (library == nil) {
+        return nil;
+    }
+    id<MTLFunction> function = [library newFunctionWithName:@"paintCells"];
+    if (function == nil) {
+        return nil;
+    }
+    return [device newComputePipelineStateWithFunction:function error:&error];
 }

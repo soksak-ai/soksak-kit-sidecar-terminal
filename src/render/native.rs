@@ -73,9 +73,14 @@ pub struct Canvas {
 }
 
 #[cfg(target_os = "macos")]
-// The raw pointer owns Metal objects that are documented thread-safe; the
-// canvas is used behind the runtime's own locks.
+// The raw pointer owns Metal objects that are documented thread-safe: the
+// device, queue and pipeline take concurrent calls, the pipeline is built once
+// at creation, and the font cache synchronizes itself. Pane render threads
+// share one canvas.
 unsafe impl Send for Canvas {}
+
+#[cfg(target_os = "macos")]
+unsafe impl Sync for Canvas {}
 
 #[cfg(target_os = "macos")]
 impl Canvas {
