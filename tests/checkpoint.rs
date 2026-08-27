@@ -94,3 +94,26 @@ fn key_environment_requires_exact_base64_key_material() {
         [7u8; 32]
     );
 }
+
+#[test]
+fn older_checkpoint_cannot_replace_a_newer_commit() {
+    let home =
+        std::env::temp_dir().join(format!("soksak-checkpoint-order-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&home);
+    let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
+
+    store
+        .write("window-a", "pane-a", 8, 3, b"new-generation", &frame())
+        .unwrap();
+    store
+        .write("window-a", "pane-a", 7, 900, b"old-generation", &frame())
+        .unwrap();
+    store
+        .write("window-a", "pane-a", 8, 2, b"old-sequence", &frame())
+        .unwrap();
+
+    let opened = store.read("window-a", "pane-a").unwrap().unwrap();
+    assert_eq!((opened.generation, opened.sequence), (8, 3));
+    assert_eq!(opened.paint, b"new-generation");
+    let _ = fs::remove_dir_all(home);
+}
