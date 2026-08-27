@@ -5,6 +5,7 @@ pub mod frame;
 pub mod integration;
 pub mod mirror;
 pub mod proto;
+pub mod render;
 pub mod runtime;
 mod transport_name;
 

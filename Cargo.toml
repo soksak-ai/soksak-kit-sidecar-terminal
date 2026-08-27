@@ -21,3 +21,6 @@ sha2 = "=0.10.9"
 integration-tests = []
 
 [workspace]
+
+[build-dependencies]
+cc = "=1.4.4"
