@@ -523,6 +523,7 @@ fn create_session_mirror(
             .flatten()
         {
             mirror.feed(&checkpoint.paint);
+            mirror.feed(&b"\r\n".repeat(rows as usize));
         }
     }
     Arc::new(Mutex::new(mirror))
