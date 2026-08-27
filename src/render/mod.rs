@@ -5,4 +5,5 @@
 //! every entry refuses by name — there is no software path.
 
 pub mod atlas;
+pub mod instances;
 pub mod native;
