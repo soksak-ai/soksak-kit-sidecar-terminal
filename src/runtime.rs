@@ -178,7 +178,7 @@ impl Runtime {
             &key,
             cols,
             rows,
-            false,
+            None,
         );
         self.registry.lock().unwrap().insert(
             key.clone(),
@@ -304,7 +304,7 @@ impl Runtime {
             &key,
             cols,
             rows,
-            restores_archive(observation.start_output_sequence()),
+            Some(observation.generation()),
         );
         // A key already held keeps its shared mirror arc — the render thread
         // holds it — and the fresh content replaces what is inside it.
@@ -636,29 +636,32 @@ fn continue_state(old: &SessionState, mut new: SessionState) -> SessionState {
     new
 }
 
-fn restores_archive(start_output_sequence: u64) -> bool {
-    start_output_sequence > 0
-}
-
 fn create_session_mirror(
     factory: MirrorFactory,
     checkpoints: Option<&CheckpointStore>,
     key: &PaneKey,
     cols: u16,
     rows: u16,
-    restore_archive: bool,
+    expected_generation: Option<u64>,
 ) -> SharedMirror {
     let mut mirror = factory(cols, rows);
-    if restore_archive {
+    if let Some(generation) = expected_generation {
         let window = key.0.as_deref().unwrap_or("__no-window__");
         if let Some(checkpoint) = checkpoints
             .and_then(|store| store.read(window, &key.1).ok())
             .flatten()
         {
-            // The paint carries its own cursor: a live shell's screen stands
-            // back up exactly where it was. Padding rows below it scrolled the
-            // screen away and dropped the prompt to the bottom of a blank pane.
-            mirror.feed(&checkpoint.paint);
+            // Only the same shell's screen stands back up: the checkpoint
+            // names the generation it was taken from, and a session adopted
+            // after a restart carries a new one. Replaying a dead shell's
+            // screen under a fresh prompt detached the visible cursor from
+            // the real one, and the bottom-row prompt it saved then came back
+            // on every boot.
+            if checkpoint.generation == generation {
+                // The paint carries its own cursor: a live shell's screen
+                // stands back up exactly where it was.
+                mirror.feed(&checkpoint.paint);
+            }
         }
     }
     Arc::new(Mutex::new(mirror))
@@ -1304,13 +1307,6 @@ mod tests {
         assert_eq!(continued.session, 2);
     }
 
-    #[test]
-    fn a_brand_new_session_never_replays_a_dead_shells_screen() {
-        assert!(!super::restores_archive(0));
-        assert!(super::restores_archive(1));
-        assert!(super::restores_archive(900_000));
-    }
-
     use super::*;
     use crate::mirror::{FrameLine, FrameRun, TerminalFrame, TerminalModes};
     use std::sync::mpsc;
@@ -1565,7 +1561,7 @@ mod tests {
     }
 
     #[test]
-    fn an_adopted_session_replays_the_archive_at_its_own_cursor() {
+    fn only_the_same_generations_screen_stands_back_up() {
         let home = test_root("checkpoint-archive-");
         let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [7; 32]).unwrap();
         store
@@ -1580,18 +1576,21 @@ mod tests {
             .unwrap();
         let key = (Some("window".to_string()), "pane".to_string());
 
-        let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, true);
+        // The same shell (generation 4): its screen stands back up, at its own cursor.
+        let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4));
         restored.lock().unwrap().feed(b"fresh-shell");
-        // The paint carries its own cursor; nothing is padded below it.
         let mut expected = b"archived-screen\n".to_vec();
         expected.extend_from_slice(b"fresh-shell");
-        assert_eq!(
-            restored.lock().unwrap().rehydrate(),
-            expected,
-        );
+        assert_eq!(restored.lock().unwrap().rehydrate(), expected);
 
-        let warm = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, false);
-        assert!(warm.lock().unwrap().rehydrate().is_empty());
+        // Another generation is another shell: a dead shell's screen is never
+        // replayed under a fresh prompt.
+        let fresh = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(5));
+        assert!(fresh.lock().unwrap().rehydrate().is_empty());
+
+        // No expectation asks for nothing.
+        let bare = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, None);
+        assert!(bare.lock().unwrap().rehydrate().is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }
 
