@@ -17,6 +17,8 @@ use crate::daemon::{
 };
 use crate::frame::{FrameReply, FrameSubscribers, delta};
 use crate::mirror::MirrorCapabilities;
+#[cfg(target_os = "macos")]
+use crate::render::session::SurfaceSessions;
 use crate::{MirrorFactory, TerminalStateMirror, proto};
 
 type PaneKey = (Option<String>, String);
@@ -103,6 +105,8 @@ pub struct Runtime {
     control: Arc<Mutex<ControlClient>>,
     prepared: Arc<Mutex<HashMap<String, ObservationStream>>>,
     checkpoints: Option<Arc<CheckpointStore>>,
+    #[cfg(target_os = "macos")]
+    surface_sessions: Arc<SurfaceSessions>,
 }
 
 impl Runtime {
@@ -131,6 +135,8 @@ impl Runtime {
             control: Arc::new(Mutex::new(control)),
             prepared: Arc::new(Mutex::new(HashMap::new())),
             checkpoints,
+            #[cfg(target_os = "macos")]
+            surface_sessions: Arc::new(SurfaceSessions::new()),
         })
     }
 
@@ -490,8 +496,36 @@ impl Runtime {
             "terminal.archive" => self.archive(request),
             "terminal.retire" => self.retire(request),
             "terminal.frame" => self.frame(request),
+            command if command.starts_with("surface.") => self.surface(command, request),
             _ => result_error("UNKNOWN_COMMAND", "unknown terminal-state command"),
         }
+    }
+
+    /// The render half answers surface.* — the wiring hands it the live
+    /// mirror and its output signal, and everything else stays here.
+    #[cfg(target_os = "macos")]
+    fn surface(&self, command: &str, request: &Value) -> Value {
+        let wiring = pane_key(request).and_then(|key| {
+            let registry = self.registry.lock().unwrap();
+            registry
+                .get(&key)
+                .map(|state| (state.mirror.clone(), state.frame_signal.clone()))
+        });
+        match self
+            .surface_sessions
+            .command(self.sidecar_id, command, request, wiring)
+        {
+            Ok(data) => result_ok(data),
+            Err(error) => result_error(error.code, &error.message),
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn surface(&self, _command: &str, _request: &Value) -> Value {
+        result_error(
+            "RENDER_UNSUPPORTED",
+            "surface rendering exists only on macOS",
+        )
     }
 
     pub fn serve(self, listener: Listener, token: String) {

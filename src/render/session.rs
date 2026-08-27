@@ -1,0 +1,586 @@
+//! The render sessions: one thread per pane paints its mirror into the ring
+//! and signals frames over the mach channel; the runtime's `surface.*`
+//! commands steer it. Nothing here writes to the pty — input belongs to the
+//! application, rendering belongs here (P3).
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use soksak_contract_surface::{DamageRect, Message};
+
+use super::channel::SurfaceChannel;
+use super::instances::{pack_bgra, Palette};
+use super::native::Canvas;
+use super::painter::{Painter, Preedit};
+use super::surface_ring::SurfaceRing;
+use crate::TerminalStateMirror;
+
+pub type SharedMirror = Arc<Mutex<Box<dyn TerminalStateMirror>>>;
+pub type FrameSignal = Arc<(Mutex<u64>, Condvar)>;
+
+/// A refusal, named. The runtime wraps it in its response grammar.
+#[derive(Debug)]
+pub struct SurfaceError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+fn refuse(code: &'static str, message: impl Into<String>) -> SurfaceError {
+    SurfaceError { code, message: message.into() }
+}
+
+/// What one pane's render thread is steered by.
+struct PaneControl {
+    pane: String,
+    stop: AtomicBool,
+    paused: AtomicBool,
+    dirty: AtomicBool,
+    overlay: Mutex<OverlayState>,
+    returns: Mutex<Vec<u8>>,
+    signal: FrameSignal,
+}
+
+#[derive(Default)]
+struct OverlayState {
+    offset: usize,
+    preedit: Option<(String, usize)>,
+    resize: Option<(u32, u32, f64)>,
+    palette: Option<Palette>,
+}
+
+struct FontChoice {
+    family: String,
+    pt: f64,
+}
+
+pub struct SurfaceSessions {
+    canvas: Mutex<Option<Arc<Canvas>>>,
+    channel: Mutex<Option<Arc<SurfaceChannel>>>,
+    identifier: Mutex<Option<String>>,
+    panes: Arc<Mutex<HashMap<String, Arc<PaneControl>>>>,
+    fonts: Mutex<HashMap<String, FontChoice>>,
+}
+
+impl Default for SurfaceSessions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SurfaceSessions {
+    pub fn new() -> Self {
+        Self {
+            canvas: Mutex::new(None),
+            channel: Mutex::new(None),
+            identifier: Mutex::new(None),
+            panes: Arc::new(Mutex::new(HashMap::new())),
+            fonts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn canvas(&self) -> Result<Arc<Canvas>, SurfaceError> {
+        let mut held = self.canvas.lock().unwrap();
+        if let Some(canvas) = held.as_ref() {
+            return Ok(Arc::clone(canvas));
+        }
+        let canvas = Arc::new(
+            Canvas::create().map_err(|error| refuse("METAL_UNAVAILABLE", error))?,
+        );
+        *held = Some(Arc::clone(&canvas));
+        Ok(canvas)
+    }
+
+    fn channel(&self, sidecar_id: &str, identifier: &str) -> Result<Arc<SurfaceChannel>, SurfaceError> {
+        {
+            let known = self.identifier.lock().unwrap();
+            if let Some(existing) = known.as_ref() {
+                if existing != identifier {
+                    return Err(refuse(
+                        "IDENTIFIER_MISMATCH",
+                        format!("this process serves {existing}, not {identifier}"),
+                    ));
+                }
+            }
+        }
+        let mut held = self.channel.lock().unwrap();
+        if let Some(channel) = held.as_ref() {
+            return Ok(Arc::clone(channel));
+        }
+        let channel = Arc::new(
+            SurfaceChannel::open(identifier)
+                .map_err(|error| refuse("CHANNEL_UNAVAILABLE", error))?,
+        );
+        channel
+            .send(&Message::Hello { sidecar_id: sidecar_id.to_string() }, &[])
+            .map_err(|error| refuse("CHANNEL_SEND_FAILED", error))?;
+        *held = Some(Arc::clone(&channel));
+        *self.identifier.lock().unwrap() = Some(identifier.to_string());
+        self.spawn_reader(Arc::clone(&channel));
+        Ok(channel)
+    }
+
+    /// The one reader of application-to-sidecar messages: released surfaces
+    /// route to their pane and wake its thread.
+    fn spawn_reader(&self, channel: Arc<SurfaceChannel>) {
+        let panes = PanesHandle(Arc::clone(&self.panes));
+        std::thread::spawn(move || loop {
+            match channel.recv(500) {
+                Ok(Some(Message::Released { pane, ring_index })) => {
+                    if let Some(control) = panes.get(&pane) {
+                        control.returns.lock().unwrap().push(ring_index);
+                        control.wake();
+                    }
+                }
+                Ok(Some(_)) | Ok(None) => {}
+                Err(_) => return,
+            }
+        });
+    }
+
+    /// Dispatch one surface.* command. `wiring` is resolved by the runtime
+    /// from its registry for the commands that need a live session.
+    pub fn command(
+        &self,
+        sidecar_id: &str,
+        command: &str,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        match command {
+            "surface.open" => self.open(sidecar_id, request, wiring),
+            "surface.resize" => self.resize(request),
+            "surface.setPaused" => self.set_paused(request),
+            "surface.preedit" => self.preedit(request),
+            "surface.scroll" => self.scroll(request, wiring),
+            "surface.read" => self.read(request, wiring),
+            "surface.close" => self.close(request),
+            "surface.selection" | "surface.hover" | "surface.theme" => {
+                Err(refuse("NOT_YET_SERVED", format!("{command} arrives with the overlay pass")))
+            }
+            _ => Err(refuse("UNKNOWN_COMMAND", "unknown surface command")),
+        }
+    }
+
+    fn pane_of(&self, request: &Value) -> Result<String, SurfaceError> {
+        request
+            .get("pane")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| refuse("INVALID_PARAMS", "pane is required"))
+    }
+
+    fn control_of(&self, pane: &str) -> Result<Arc<PaneControl>, SurfaceError> {
+        self.panes
+            .lock()
+            .unwrap()
+            .get(pane)
+            .cloned()
+            .ok_or_else(|| refuse("NOT_FOUND", format!("no surface renders {pane}")))
+    }
+
+    fn open(
+        &self,
+        sidecar_id: &str,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        let (mirror, signal) =
+            wiring.ok_or_else(|| refuse("NOT_FOUND", "no live terminal-state mirror for this key"))?;
+        let identifier = request
+            .get("identifier")
+            .and_then(Value::as_str)
+            .ok_or_else(|| refuse("INVALID_PARAMS", "identifier is required"))?;
+        let pane = self.pane_of(request)?;
+        let pixel_w = number(request, "pixelW")?;
+        let pixel_h = number(request, "pixelH")?;
+        let scale = number(request, "scale")?;
+        let font = request.get("font").ok_or_else(|| refuse("INVALID_PARAMS", "font is required"))?;
+        let family = font
+            .get("family")
+            .and_then(Value::as_str)
+            .ok_or_else(|| refuse("INVALID_PARAMS", "font.family is required"))?;
+        let pt = number(font, "pt")?;
+        let palette = parse_theme(
+            request.get("theme").ok_or_else(|| refuse("INVALID_PARAMS", "theme is required"))?,
+        )?;
+
+        let canvas = self.canvas()?;
+        let channel = self.channel(sidecar_id, identifier)?;
+        let metrics = canvas
+            .font_metrics(family, pt, scale)
+            .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
+        let (cols, rows) = grid_for(pixel_w, pixel_h, scale, metrics.cell_w, metrics.cell_h);
+        let cell_w = metrics.cell_w.ceil() as u32;
+        let cell_h = metrics.cell_h.ceil() as u32;
+
+        let painter = Painter::new(
+            Arc::clone(&canvas),
+            family,
+            pt,
+            scale,
+            cols,
+            rows,
+            palette,
+        )
+        .map_err(|error| refuse("PAINTER_UNAVAILABLE", error))?;
+        let ring = SurfaceRing::new(&canvas, cols as u32 * cell_w, rows as u32 * cell_h, rows)
+            .map_err(|error| refuse("RING_UNAVAILABLE", error))?;
+        let ports = ring.mach_ports().map_err(|error| refuse("RING_PORTS_UNAVAILABLE", error))?;
+        channel
+            .send(
+                &Message::Ring {
+                    pane: pane.clone(),
+                    pixel_w: cols as u32 * cell_w,
+                    pixel_h: rows as u32 * cell_h,
+                    scale,
+                    cell_w: metrics.cell_w,
+                    cell_h: metrics.cell_h,
+                },
+                &ports,
+            )
+            .map_err(|error| refuse("CHANNEL_SEND_FAILED", error))?;
+
+        let control = Arc::new(PaneControl {
+            pane: pane.clone(),
+            stop: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            dirty: AtomicBool::new(true),
+            overlay: Mutex::new(OverlayState::default()),
+            returns: Mutex::new(Vec::new()),
+            signal,
+        });
+        {
+            let mut panes = self.panes.lock().unwrap();
+            if panes.contains_key(&pane) {
+                return Err(refuse("ALREADY_OPEN", format!("{pane} already renders")));
+            }
+            panes.insert(pane.clone(), Arc::clone(&control));
+        }
+        self.fonts
+            .lock()
+            .unwrap()
+            .insert(pane.clone(), FontChoice { family: family.to_string(), pt });
+        spawn_render_thread(control, mirror, painter, ring, channel);
+        Ok(json!({ "cols": cols, "rows": rows, "cellW": metrics.cell_w, "cellH": metrics.cell_h }))
+    }
+
+    fn resize(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let pixel_w = number(request, "pixelW")?;
+        let pixel_h = number(request, "pixelH")?;
+        let scale = number(request, "scale")?;
+        let fonts = self.fonts.lock().unwrap();
+        let font = fonts
+            .get(&pane)
+            .ok_or_else(|| refuse("NOT_FOUND", format!("no surface renders {pane}")))?;
+        let canvas = self.canvas()?;
+        let metrics = canvas
+            .font_metrics(&font.family, font.pt, scale)
+            .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
+        let (cols, rows) = grid_for(pixel_w, pixel_h, scale, metrics.cell_w, metrics.cell_h);
+        control.overlay.lock().unwrap().resize = Some((pixel_w as u32, pixel_h as u32, scale));
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        Ok(json!({ "cols": cols, "rows": rows }))
+    }
+
+    fn set_paused(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let paused = request
+            .get("paused")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| refuse("INVALID_PARAMS", "paused is required"))?;
+        control.paused.store(paused, Ordering::Release);
+        if !paused {
+            control.dirty.store(true, Ordering::Release);
+        }
+        control.wake();
+        Ok(json!({}))
+    }
+
+    fn preedit(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let text = request.get("text").and_then(Value::as_str).unwrap_or("");
+        let caret = request.get("caret").and_then(Value::as_u64).unwrap_or(0) as usize;
+        {
+            let mut overlay = control.overlay.lock().unwrap();
+            overlay.preedit =
+                if text.is_empty() { None } else { Some((text.to_string(), caret)) };
+        }
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        Ok(json!({}))
+    }
+
+    fn scroll(
+        &self,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let (mirror, _) =
+            wiring.ok_or_else(|| refuse("NOT_FOUND", "no live terminal-state mirror for this key"))?;
+        let history = { mirror.lock().unwrap().history_size() };
+        let mut overlay = control.overlay.lock().unwrap();
+        let current = overlay.offset as i64;
+        let wanted = if let Some(offset) = request.get("offset").and_then(Value::as_i64) {
+            offset
+        } else if let Some(lines) = request.get("lines").and_then(Value::as_i64) {
+            current - lines
+        } else if let Some(edge) = request.get("edge").and_then(Value::as_str) {
+            match edge {
+                "top" => history as i64,
+                "bottom" => 0,
+                _ => return Err(refuse("INVALID_PARAMS", "edge is top or bottom")),
+            }
+        } else {
+            return Err(refuse("INVALID_PARAMS", "offset, lines or edge is required"));
+        };
+        overlay.offset = wanted.clamp(0, history as i64) as usize;
+        let offset = overlay.offset;
+        drop(overlay);
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        Ok(json!({ "offset": offset, "historySize": history }))
+    }
+
+    fn read(
+        &self,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let (mirror, _) =
+            wiring.ok_or_else(|| refuse("NOT_FOUND", "no live terminal-state mirror for this key"))?;
+        let offset = control.overlay.lock().unwrap().offset;
+        let mirror = mirror.lock().unwrap();
+        let rows = mirror.rows();
+        let wanted = request
+            .get("lines")
+            .and_then(Value::as_u64)
+            .map(|lines| lines.min(rows as u64) as u16)
+            .unwrap_or(rows);
+        let mut text = String::new();
+        for row in (rows - wanted)..rows {
+            let cells = mirror.line_cells(row as i32 - offset as i32);
+            let mut line = String::new();
+            for cell in &cells {
+                if cell.spacer {
+                    continue;
+                }
+                line.push(cell.ch);
+            }
+            text.push_str(line.trim_end());
+            text.push('\n');
+        }
+        Ok(json!({ "text": text }))
+    }
+
+    fn close(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        control.stop.store(true, Ordering::Release);
+        control.wake();
+        self.panes.lock().unwrap().remove(&pane);
+        self.fonts.lock().unwrap().remove(&pane);
+        Ok(json!({}))
+    }
+}
+
+impl PaneControl {
+    fn wake(&self) {
+        let (_, ready) = &*self.signal;
+        ready.notify_all();
+    }
+}
+
+/// A shareable view over the pane map for the reader thread.
+struct PanesHandle(Arc<Mutex<HashMap<String, Arc<PaneControl>>>>);
+
+impl PanesHandle {
+    fn get(&self, pane: &str) -> Option<Arc<PaneControl>> {
+        self.0.lock().unwrap().get(pane).cloned()
+    }
+}
+
+fn number(value: &Value, key: &str) -> Result<f64, SurfaceError> {
+    value
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|number| *number > 0.0)
+        .ok_or_else(|| refuse("INVALID_PARAMS", format!("{key} is required")))
+}
+
+fn grid_for(pixel_w: f64, pixel_h: f64, scale: f64, cell_w: f64, cell_h: f64) -> (u16, u16) {
+    let device_w = pixel_w * scale;
+    let device_h = pixel_h * scale;
+    let cols = ((device_w / cell_w).floor() as i64).max(1) as u16;
+    let rows = ((device_h / cell_h).floor() as i64).max(1) as u16;
+    (cols, rows)
+}
+
+fn parse_color(value: &Value, key: &str) -> Result<u32, SurfaceError> {
+    let text = value
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| refuse("INVALID_PARAMS", format!("theme.{key} is required")))?;
+    parse_hex(text).ok_or_else(|| refuse("INVALID_PARAMS", format!("theme.{key} is not a color")))
+}
+
+fn parse_hex(text: &str) -> Option<u32> {
+    let hex = text.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    Some(pack_bgra((value >> 16) as u8, (value >> 8) as u8, value as u8, 255))
+}
+
+fn parse_theme(theme: &Value) -> Result<Palette, SurfaceError> {
+    let fg = parse_color(theme, "fg")?;
+    let bg = parse_color(theme, "bg")?;
+    let ansi_values = theme
+        .get("ansi")
+        .and_then(Value::as_array)
+        .ok_or_else(|| refuse("INVALID_PARAMS", "theme.ansi is required"))?;
+    if ansi_values.len() != 256 {
+        return Err(refuse("INVALID_PARAMS", "theme.ansi must hold 256 colors"));
+    }
+    let mut ansi = [bg; 256];
+    for (index, entry) in ansi_values.iter().enumerate() {
+        let text = entry
+            .as_str()
+            .ok_or_else(|| refuse("INVALID_PARAMS", format!("theme.ansi[{index}] is not a color")))?;
+        ansi[index] = parse_hex(text)
+            .ok_or_else(|| refuse("INVALID_PARAMS", format!("theme.ansi[{index}] is not a color")))?;
+    }
+    Ok(Palette { fg, bg, ansi })
+}
+
+fn spawn_render_thread(
+    control: Arc<PaneControl>,
+    mirror: SharedMirror,
+    mut painter: Painter,
+    mut ring: SurfaceRing,
+    channel: Arc<SurfaceChannel>,
+) {
+    std::thread::spawn(move || {
+        let mut last_seen: u64 = {
+            let (seq, _) = &*control.signal;
+            *seq.lock().unwrap()
+        };
+        let mut last_signaled: Option<usize> = None;
+        loop {
+            if control.stop.load(Ordering::Acquire) {
+                let _ = channel.send(
+                    &Message::Ended { pane: control.pane.clone(), reason: "closed".into() },
+                    &[],
+                );
+                return;
+            }
+            // Route returned surfaces first: a release both frees a slot and
+            // tells us the previously signaled one is on screen now.
+            let returned: Vec<u8> = control.returns.lock().unwrap().drain(..).collect();
+            for index in returned {
+                if let Some(shown) = last_signaled.take() {
+                    let _ = ring.shown(shown);
+                }
+                let _ = ring.released(index as usize);
+            }
+            let progressed = {
+                let (seq, _) = &*control.signal;
+                *seq.lock().unwrap()
+            };
+            let owes = progressed != last_seen || control.dirty.swap(false, Ordering::AcqRel);
+            if owes && !control.paused.load(Ordering::Acquire) {
+                last_seen = progressed;
+                let (offset, preedit) = {
+                    let overlay = control.overlay.lock().unwrap();
+                    (overlay.offset, overlay.preedit.clone())
+                };
+                let preedit_value = preedit
+                    .map(|(text, cursor)| Preedit { text, cursor });
+                let (cursor, cursor_visible, refresh) = {
+                    let mirror = mirror.lock().unwrap();
+                    let cursor = mirror.cursor();
+                    let visible = mirror.modes().show_cursor;
+                    let refresh =
+                        painter.refresh(&**mirror, offset, preedit_value.as_ref());
+                    (cursor, visible, refresh)
+                };
+                if refresh.is_ok() {
+                    if let Ok(slot) = ring.acquire() {
+                        let (surface, state) = ring.target(slot);
+                        if let Ok(rows) = painter.paint_into(surface, state) {
+                            if !rows.is_empty() || last_signaled.is_none() {
+                                let (cell_w, cell_h) = painter.cell_size();
+                                let (width, _) = painter.pixel_size();
+                                let damage: Vec<DamageRect> = spans(&rows)
+                                    .into_iter()
+                                    .map(|(start, count)| {
+                                        (
+                                            0u16,
+                                            start * cell_h,
+                                            width as u16,
+                                            count * cell_h,
+                                        )
+                                    })
+                                    .collect();
+                                let seq = ring.signal(slot);
+                                last_signaled = Some(slot);
+                                let _ = channel.send(
+                                    &Message::FrameReady {
+                                        pane: control.pane.clone(),
+                                        ring_index: slot as u8,
+                                        seq,
+                                        cursor_row: cursor.0 as u16,
+                                        cursor_col: cursor.1 as u16,
+                                        cursor_visible,
+                                        damage,
+                                    },
+                                    &[],
+                                );
+                                let _ = cell_w;
+                            } else {
+                                // Nothing changed for this slot: hand it back.
+                                let _ = ring.released(slot);
+                            }
+                        }
+                    }
+                }
+            }
+            let (seq, ready) = &*control.signal;
+            let guard = seq.lock().unwrap();
+            if *guard == last_seen
+                && !control.dirty.load(Ordering::Acquire)
+                && !control.stop.load(Ordering::Acquire)
+            {
+                let _ = ready.wait_timeout(guard, Duration::from_millis(500)).unwrap();
+            }
+        }
+    });
+}
+
+fn spans(rows: &[u16]) -> Vec<(u16, u16)> {
+    let mut spans = Vec::new();
+    let mut index = 0;
+    while index < rows.len() {
+        let start = rows[index];
+        let mut end = start;
+        while index + 1 < rows.len() && rows[index + 1] == end + 1 {
+            index += 1;
+            end = rows[index];
+        }
+        spans.push((start, end - start + 1));
+        index += 1;
+    }
+    spans
+}

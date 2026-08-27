@@ -68,7 +68,11 @@ pub struct SurfaceChannel {
     raw: *mut RawChannel,
 }
 
+// mach_msg is a kernel trap and safe to call concurrently on the same rights:
+// every render thread sends, and only the one reader thread ever receives on
+// the reply right.
 unsafe impl Send for SurfaceChannel {}
+unsafe impl Sync for SurfaceChannel {}
 
 impl SurfaceChannel {
     /// Look the application's checked-in name up. The name derives from the

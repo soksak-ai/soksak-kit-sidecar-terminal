@@ -12,4 +12,6 @@ pub mod channel;
 #[cfg(target_os = "macos")]
 pub mod painter;
 #[cfg(target_os = "macos")]
+pub mod session;
+#[cfg(target_os = "macos")]
 pub mod surface_ring;

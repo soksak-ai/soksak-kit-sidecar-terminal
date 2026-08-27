@@ -144,3 +144,52 @@ pub fn ink_in_cells(
     }
     ink
 }
+
+/// A grid mirror the test can keep mutating while the runtime holds it as a
+/// boxed trait object.
+pub struct SharedGrid(pub std::sync::Arc<std::sync::Mutex<GridMirror>>);
+
+impl TerminalStateMirror for SharedGrid {
+    fn feed(&mut self, bytes: &[u8]) {
+        self.0.lock().unwrap().feed(bytes);
+    }
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.0.lock().unwrap().resize(cols, rows);
+    }
+    fn rehydrate(&self) -> Vec<u8> {
+        self.0.lock().unwrap().rehydrate()
+    }
+    fn cold_paint(&self) -> Vec<u8> {
+        self.0.lock().unwrap().cold_paint()
+    }
+    fn frame_at(&self, offset: usize) -> TerminalFrame {
+        self.0.lock().unwrap().frame_at(offset)
+    }
+    fn history_size(&self) -> usize {
+        self.0.lock().unwrap().history_size()
+    }
+    fn modes(&self) -> TerminalModes {
+        self.0.lock().unwrap().modes()
+    }
+    fn capabilities(&self) -> MirrorCapabilities {
+        self.0.lock().unwrap().capabilities()
+    }
+    fn alt_active(&self) -> bool {
+        self.0.lock().unwrap().alt_active()
+    }
+    fn suppressed_replies(&self) -> u64 {
+        self.0.lock().unwrap().suppressed_replies()
+    }
+    fn cols(&self) -> u16 {
+        self.0.lock().unwrap().cols()
+    }
+    fn rows(&self) -> u16 {
+        self.0.lock().unwrap().rows()
+    }
+    fn cursor(&self) -> (usize, usize) {
+        self.0.lock().unwrap().cursor()
+    }
+    fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
+        self.0.lock().unwrap().line_cells(line)
+    }
+}
