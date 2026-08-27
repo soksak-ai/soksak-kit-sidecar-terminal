@@ -8,6 +8,18 @@ use std::sync::Arc;
 use super::atlas::{Atlas, GlyphKey, ATLAS_PAGE_SIZE};
 use super::instances::{row_instances, GlyphPlacement, GpuCell, Palette};
 use super::native::{AtlasTexture, Canvas, Surface};
+
+/// What one target surface currently shows, row by row. Three ring surfaces
+/// carry three of these; each catches up on its own damage.
+pub struct TargetState {
+    painted: Vec<Option<u64>>,
+}
+
+impl TargetState {
+    pub fn new(rows: u16) -> Self {
+        Self { painted: vec![None; rows as usize] }
+    }
+}
 use crate::mirror::{TerminalCell, TerminalColor};
 use crate::TerminalStateMirror;
 
@@ -15,7 +27,6 @@ pub struct Painter {
     canvas: Arc<Canvas>,
     atlas: Atlas,
     atlas_texture: AtlasTexture,
-    surface: Surface,
     palette: Palette,
     family: String,
     pt: f64,
@@ -26,7 +37,7 @@ pub struct Painter {
     cols: u16,
     rows: u16,
     cells: Vec<GpuCell>,
-    baselines: Vec<Option<u64>>,
+    hashes: Vec<Option<u64>>,
 }
 
 impl Painter {
@@ -46,12 +57,10 @@ impl Painter {
         let cell_w = metrics.cell_w.ceil() as u16;
         let cell_h = metrics.cell_h.ceil() as u16;
         let atlas_texture = canvas.atlas_texture(ATLAS_PAGE_SIZE)?;
-        let surface = canvas.surface(cols as u32 * cell_w as u32, rows as u32 * cell_h as u32)?;
         Ok(Self {
             canvas,
             atlas: Atlas::default(),
             atlas_texture,
-            surface,
             palette,
             family: family.to_string(),
             pt,
@@ -62,7 +71,7 @@ impl Painter {
             cols,
             rows,
             cells: vec![GpuCell::default(); cols as usize * rows as usize],
-            baselines: vec![None; rows as usize],
+            hashes: vec![None; rows as usize],
         })
     }
 
@@ -70,21 +79,27 @@ impl Painter {
         (self.cell_w, self.cell_h)
     }
 
-    pub fn pixel_size(&self) -> (u32, u32) {
-        (self.surface.width(), self.surface.height())
+    pub fn canvas(&self) -> &Canvas {
+        &self.canvas
     }
 
-    /// Paint what changed since the last call and return the dirty rows.
-    /// `offset` scrolls the viewport into history; the cursor paints only at
-    /// the bottom (offset 0) and only while the mirror shows it.
-    pub fn paint(
+    pub fn pixel_size(&self) -> (u32, u32) {
+        (
+            self.cols as u32 * self.cell_w as u32,
+            self.rows as u32 * self.cell_h as u32,
+        )
+    }
+
+    /// Fold the mirror's viewport into the instance grid. `offset` scrolls
+    /// into history; the cursor paints only at the bottom (offset 0) and only
+    /// while the mirror shows it.
+    pub fn refresh(
         &mut self,
         mirror: &dyn TerminalStateMirror,
         offset: usize,
-    ) -> Result<Vec<u16>, String> {
+    ) -> Result<(), String> {
         let show_cursor = mirror.modes().show_cursor && offset == 0;
         let cursor = mirror.cursor();
-        let mut dirty: Vec<u16> = Vec::new();
         for row in 0..self.rows {
             let line = row as i32 - offset as i32;
             let cells = mirror.line_cells(line);
@@ -93,13 +108,31 @@ impl Painter {
             if cursor_here {
                 hash ^= 0x9E37_79B9_7F4A_7C15u64.wrapping_add(cursor.1 as u64);
             }
-            if self.baselines[row as usize] == Some(hash) {
+            if self.hashes[row as usize] == Some(hash) {
                 continue;
             }
             let cursor_col = if cursor_here { Some(cursor.1) } else { None };
             self.build_row(row, &cells, cursor_col)?;
-            self.baselines[row as usize] = Some(hash);
-            dirty.push(row);
+            self.hashes[row as usize] = Some(hash);
+        }
+        Ok(())
+    }
+
+    /// Bring one target surface up to the current grid and return the rows it
+    /// was owed. A fresh target is owed everything; a current one, nothing.
+    pub fn paint_into(
+        &mut self,
+        target: &Surface,
+        state: &mut TargetState,
+    ) -> Result<Vec<u16>, String> {
+        if state.painted.len() != self.rows as usize {
+            return Err("TARGET_ROWS_MISMATCH: the target state is not this grid".to_string());
+        }
+        let mut dirty: Vec<u16> = Vec::new();
+        for row in 0..self.rows {
+            if state.painted[row as usize] != self.hashes[row as usize] {
+                dirty.push(row);
+            }
         }
         let mut index = 0;
         while index < dirty.len() {
@@ -111,7 +144,7 @@ impl Painter {
             }
             self.canvas.paint(
                 &self.atlas_texture,
-                &self.surface,
+                target,
                 &self.cells,
                 self.cols,
                 self.rows,
@@ -122,19 +155,18 @@ impl Painter {
             )?;
             index += 1;
         }
+        for row in &dirty {
+            state.painted[*row as usize] = self.hashes[*row as usize];
+        }
         Ok(dirty)
     }
 
-    /// Everything repaints on the next call — a resize, theme change or a new
-    /// surface invalidates every baseline at once.
+    /// Everything repaints on the next call — a theme change or a resize
+    /// invalidates every row at once.
     pub fn invalidate(&mut self) {
-        for baseline in &mut self.baselines {
-            *baseline = None;
+        for hash in &mut self.hashes {
+            *hash = None;
         }
-    }
-
-    pub fn read_pixels(&self) -> Result<Vec<u8>, String> {
-        self.canvas.surface_read(&self.surface)
     }
 
     fn build_row(

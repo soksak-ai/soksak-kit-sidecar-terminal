@@ -8,8 +8,8 @@ use soksak_kit_sidecar_terminal::mirror::{
     MirrorCapabilities, TerminalCell, TerminalColor, TerminalFrame, TerminalModes,
 };
 use soksak_kit_sidecar_terminal::render::instances::{pack_bgra, Palette};
-use soksak_kit_sidecar_terminal::render::native::Canvas;
-use soksak_kit_sidecar_terminal::render::painter::Painter;
+use soksak_kit_sidecar_terminal::render::native::{Canvas, Surface};
+use soksak_kit_sidecar_terminal::render::painter::{Painter, TargetState};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
 
 fn plain(ch: char) -> TerminalCell {
@@ -128,9 +128,28 @@ fn palette() -> Palette {
     }
 }
 
-fn painter(cols: u16, rows: u16) -> Painter {
+fn painter(cols: u16, rows: u16) -> (Painter, Surface, TargetState) {
     let canvas = Arc::new(Canvas::create().expect("a Metal device exists on this host"));
-    Painter::new(canvas, "Menlo", 13.0, 2.0, cols, rows, palette()).expect("the painter builds")
+    let painter =
+        Painter::new(Arc::clone(&canvas), "Menlo", 13.0, 2.0, cols, rows, palette())
+            .expect("the painter builds");
+    let (width, height) = painter.pixel_size();
+    let surface = canvas.surface(width, height).expect("a target allocates");
+    (painter, surface, TargetState::new(rows))
+}
+
+fn paint(
+    painter: &mut Painter,
+    surface: &Surface,
+    state: &mut TargetState,
+    mirror: &GridMirror,
+) -> Vec<u16> {
+    painter.refresh(mirror, 0).expect("refreshes");
+    painter.paint_into(surface, state).expect("paints")
+}
+
+fn canvas_read(painter: &Painter, surface: &Surface) -> Vec<u8> {
+    painter.canvas().surface_read(surface).expect("reads")
 }
 
 /// Ink pixels inside a cell-rect: anything that is not the dark background.
@@ -156,11 +175,11 @@ fn ink_in_cells(
 
 #[test]
 fn a_painted_row_shows_its_glyphs_where_its_cells_are() {
-    let mut painter = painter(8, 2);
+    let (mut painter, surface, mut state) = painter(8, 2);
     let mirror = GridMirror::from_rows(8, &["AB      ", "        "]);
-    let dirty = painter.paint(&mirror, 0).expect("paints");
+    let dirty = paint(&mut painter, &surface, &mut state, &mirror);
     assert_eq!(dirty, vec![0, 1], "the first paint owes every row");
-    let pixels = painter.read_pixels().expect("reads");
+    let pixels = canvas_read(&painter, &surface);
     let (cell, (width, _)) = (painter.cell_size(), painter.pixel_size());
     assert!(ink_in_cells(&pixels, width, cell, 0..2, 0) > 0, "AB leaves ink in its cells");
     assert_eq!(ink_in_cells(&pixels, width, cell, 4..8, 0), 0, "blank cells stay background");
@@ -169,14 +188,14 @@ fn a_painted_row_shows_its_glyphs_where_its_cells_are() {
 
 #[test]
 fn a_second_paint_touches_only_the_changed_row() {
-    let mut painter = painter(8, 3);
+    let (mut painter, surface, mut state) = painter(8, 3);
     let mut mirror = GridMirror::from_rows(8, &["AA      ", "BB      ", "CC      "]);
-    painter.paint(&mirror, 0).expect("first paint");
-    let before = painter.read_pixels().expect("reads");
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let before = canvas_read(&painter, &surface);
     mirror.grid[1] = GridMirror::from_rows(8, &["DD      "]).grid.remove(0);
-    let dirty = painter.paint(&mirror, 0).expect("second paint");
+    let dirty = paint(&mut painter, &surface, &mut state, &mirror);
     assert_eq!(dirty, vec![1], "only the changed row is owed");
-    let after = painter.read_pixels().expect("reads");
+    let after = canvas_read(&painter, &surface);
     let (cell, (width, _)) = (painter.cell_size(), painter.pixel_size());
     let row_bytes = (width * cell.1 as u32 * 4) as usize;
     assert_eq!(before[..row_bytes], after[..row_bytes], "row 0 pixels never moved");
@@ -186,10 +205,10 @@ fn a_second_paint_touches_only_the_changed_row() {
 
 #[test]
 fn a_wide_glyph_covers_both_of_its_cells() {
-    let mut painter = painter(6, 1);
+    let (mut painter, surface, mut state) = painter(6, 1);
     let mirror = GridMirror::from_rows(6, &["한\u{0}    "]);
-    painter.paint(&mirror, 0).expect("paints");
-    let pixels = painter.read_pixels().expect("reads");
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let pixels = canvas_read(&painter, &surface);
     let (cell, (width, _)) = (painter.cell_size(), painter.pixel_size());
     assert!(ink_in_cells(&pixels, width, cell, 0..1, 0) > 0, "the leading cell has ink");
     assert!(ink_in_cells(&pixels, width, cell, 1..2, 0) > 0, "the spacer cell continues the glyph");
@@ -198,9 +217,9 @@ fn a_wide_glyph_covers_both_of_its_cells() {
 
 #[test]
 fn an_unchanged_screen_owes_no_rows() {
-    let mut painter = painter(4, 2);
+    let (mut painter, surface, mut state) = painter(4, 2);
     let mirror = GridMirror::from_rows(4, &["ok  ", "    "]);
-    painter.paint(&mirror, 0).expect("first paint");
-    let dirty = painter.paint(&mirror, 0).expect("second paint");
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let dirty = paint(&mut painter, &surface, &mut state, &mirror);
     assert!(dirty.is_empty(), "nothing changed, nothing repaints: {dirty:?}");
 }
