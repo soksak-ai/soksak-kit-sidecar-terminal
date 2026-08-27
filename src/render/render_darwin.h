@@ -35,3 +35,25 @@ typedef struct SoksakGlyphBitmap {
 int32_t soksak_canvas_raster_glyph(SoksakCanvas *canvas, const char *family, double pt,
                                    double scale, uint32_t codepoint, uint8_t *coverage,
                                    uint32_t capW, uint32_t capH, SoksakGlyphBitmap *placed);
+
+// A process-wide R8 coverage atlas texture and the IOSurface targets.
+typedef struct SoksakAtlas SoksakAtlas;
+typedef struct SoksakSurface SoksakSurface;
+
+SoksakAtlas *soksak_canvas_atlas_create(SoksakCanvas *canvas, uint32_t size);
+void soksak_canvas_atlas_free(SoksakAtlas *atlas);
+int32_t soksak_canvas_atlas_upload(SoksakAtlas *atlas, uint32_t x, uint32_t y, uint32_t w,
+                                   uint32_t h, const uint8_t *coverage, uint32_t stride);
+
+SoksakSurface *soksak_canvas_surface_create(SoksakCanvas *canvas, uint32_t width,
+                                            uint32_t height);
+void soksak_canvas_surface_free(SoksakSurface *surface);
+
+// Paint rows [rowStart, rowStart+rowCount) of the cell grid into the surface.
+// `cells` is cols × rows 32-byte instances. Blocks until the pass completes.
+int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurface *surface,
+                            const void *cells, uint32_t cols, uint32_t rows, uint32_t cellW,
+                            uint32_t cellH, uint32_t rowStart, uint32_t rowCount);
+
+// Copy the surface pixels out, BGRA rows tightly packed (width × 4 bytes each).
+int32_t soksak_canvas_surface_read(SoksakSurface *surface, uint8_t *bgra, uint64_t cap);

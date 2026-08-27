@@ -180,3 +180,198 @@ impl Canvas {
         Err("RENDER_UNSUPPORTED: the surface canvas exists only on macOS".to_string())
     }
 }
+
+#[cfg(target_os = "macos")]
+mod darwin_paint {
+    use std::os::raw::c_int;
+
+    #[repr(C)]
+    pub(super) struct RawAtlas {
+        _opaque: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub(super) struct RawSurface {
+        _opaque: [u8; 0],
+    }
+
+    unsafe extern "C" {
+        pub(super) fn soksak_canvas_atlas_create(
+            canvas: *mut super::darwin::RawCanvas,
+            size: u32,
+        ) -> *mut RawAtlas;
+        pub(super) fn soksak_canvas_atlas_free(atlas: *mut RawAtlas);
+        pub(super) fn soksak_canvas_atlas_upload(
+            atlas: *mut RawAtlas,
+            x: u32,
+            y: u32,
+            w: u32,
+            h: u32,
+            coverage: *const u8,
+            stride: u32,
+        ) -> c_int;
+        pub(super) fn soksak_canvas_surface_create(
+            canvas: *mut super::darwin::RawCanvas,
+            width: u32,
+            height: u32,
+        ) -> *mut RawSurface;
+        pub(super) fn soksak_canvas_surface_free(surface: *mut RawSurface);
+        pub(super) fn soksak_canvas_paint(
+            canvas: *mut super::darwin::RawCanvas,
+            atlas: *mut RawAtlas,
+            surface: *mut RawSurface,
+            cells: *const u8,
+            cols: u32,
+            rows: u32,
+            cell_w: u32,
+            cell_h: u32,
+            row_start: u32,
+            row_count: u32,
+        ) -> c_int;
+        pub(super) fn soksak_canvas_surface_read(
+            surface: *mut RawSurface,
+            bgra: *mut u8,
+            cap: u64,
+        ) -> c_int;
+    }
+}
+
+/// The process-wide R8 coverage page on the GPU; the atlas bookkeeping in
+/// `render::atlas` decides where every glyph lands on it.
+#[cfg(target_os = "macos")]
+pub struct AtlasTexture {
+    raw: *mut darwin_paint::RawAtlas,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for AtlasTexture {}
+
+#[cfg(target_os = "macos")]
+impl Drop for AtlasTexture {
+    fn drop(&mut self) {
+        unsafe { darwin_paint::soksak_canvas_atlas_free(self.raw) };
+    }
+}
+
+/// One IOSurface and its texture view; the application composites this exact
+/// object, and the ring will hold three of them.
+#[cfg(target_os = "macos")]
+pub struct Surface {
+    raw: *mut darwin_paint::RawSurface,
+    width: u32,
+    height: u32,
+}
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for Surface {}
+
+#[cfg(target_os = "macos")]
+impl Surface {
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe { darwin_paint::soksak_canvas_surface_free(self.raw) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Canvas {
+    pub fn atlas_texture(&self, size: u16) -> Result<AtlasTexture, String> {
+        let raw = unsafe { darwin_paint::soksak_canvas_atlas_create(self.raw, size as u32) };
+        if raw.is_null() {
+            return Err("ATLAS_UNAVAILABLE: the coverage page did not allocate".to_string());
+        }
+        Ok(AtlasTexture { raw })
+    }
+
+    pub fn atlas_upload(
+        &self,
+        atlas: &AtlasTexture,
+        x: u16,
+        y: u16,
+        bitmap: &super::atlas::Bitmap,
+    ) -> Result<(), String> {
+        let code = unsafe {
+            darwin_paint::soksak_canvas_atlas_upload(
+                atlas.raw,
+                x as u32,
+                y as u32,
+                bitmap.w as u32,
+                bitmap.h as u32,
+                bitmap.coverage.as_ptr(),
+                bitmap.w as u32,
+            )
+        };
+        if code != 0 {
+            return Err(format!("ATLAS_STAGE_{code}: the coverage did not upload"));
+        }
+        Ok(())
+    }
+
+    pub fn surface(&self, width: u32, height: u32) -> Result<Surface, String> {
+        let raw = unsafe { darwin_paint::soksak_canvas_surface_create(self.raw, width, height) };
+        if raw.is_null() {
+            return Err("SURFACE_UNAVAILABLE: the IOSurface did not allocate".to_string());
+        }
+        Ok(Surface { raw, width, height })
+    }
+
+    /// Paint rows [row_start, row_start + row_count) of the instance grid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(
+        &self,
+        atlas: &AtlasTexture,
+        surface: &Surface,
+        cells: &[super::instances::GpuCell],
+        cols: u16,
+        rows: u16,
+        cell_w: u16,
+        cell_h: u16,
+        row_start: u16,
+        row_count: u16,
+    ) -> Result<(), String> {
+        if cells.len() != cols as usize * rows as usize {
+            return Err("PAINT_GRID_MISMATCH: the instance buffer is not cols x rows".to_string());
+        }
+        let code = unsafe {
+            darwin_paint::soksak_canvas_paint(
+                self.raw,
+                atlas.raw,
+                surface.raw,
+                cells.as_ptr().cast(),
+                cols as u32,
+                rows as u32,
+                cell_w as u32,
+                cell_h as u32,
+                row_start as u32,
+                row_count as u32,
+            )
+        };
+        if code != 0 {
+            return Err(format!("PAINT_STAGE_{code}: the pass did not complete"));
+        }
+        Ok(())
+    }
+
+    /// The surface pixels, BGRA rows tightly packed. Parking and tests read
+    /// the verdict from here, never from the encoder.
+    pub fn surface_read(&self, surface: &Surface) -> Result<Vec<u8>, String> {
+        let mut bgra = vec![0u8; surface.width as usize * surface.height as usize * 4];
+        let code = unsafe {
+            darwin_paint::soksak_canvas_surface_read(surface.raw, bgra.as_mut_ptr(), bgra.len() as u64)
+        };
+        if code != 0 {
+            return Err(format!("READ_STAGE_{code}: the surface did not read back"));
+        }
+        Ok(bgra)
+    }
+}

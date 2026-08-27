@@ -1,0 +1,257 @@
+//! The painter: one mirror's viewport becomes pixels on an IOSurface. Rust
+//! hashes rows, keeps the instance grid and decides damage; the canvas paints
+//! exactly the dirty band. Rows that did not change are never touched — the
+//! damage list is the painter's testimony and its test surface.
+
+use std::sync::Arc;
+
+use super::atlas::{Atlas, GlyphKey, ATLAS_PAGE_SIZE};
+use super::instances::{row_instances, GlyphPlacement, GpuCell, Palette};
+use super::native::{AtlasTexture, Canvas, Surface};
+use crate::mirror::{TerminalCell, TerminalColor};
+use crate::TerminalStateMirror;
+
+pub struct Painter {
+    canvas: Arc<Canvas>,
+    atlas: Atlas,
+    atlas_texture: AtlasTexture,
+    surface: Surface,
+    palette: Palette,
+    family: String,
+    pt: f64,
+    scale: f64,
+    ascent: f64,
+    cell_w: u16,
+    cell_h: u16,
+    cols: u16,
+    rows: u16,
+    cells: Vec<GpuCell>,
+    baselines: Vec<Option<u64>>,
+}
+
+impl Painter {
+    pub fn new(
+        canvas: Arc<Canvas>,
+        family: &str,
+        pt: f64,
+        scale: f64,
+        cols: u16,
+        rows: u16,
+        palette: Palette,
+    ) -> Result<Self, String> {
+        if cols == 0 || rows == 0 {
+            return Err("PAINTER_EMPTY: a zero-cell grid paints nothing".to_string());
+        }
+        let metrics = canvas.font_metrics(family, pt, scale)?;
+        let cell_w = metrics.cell_w.ceil() as u16;
+        let cell_h = metrics.cell_h.ceil() as u16;
+        let atlas_texture = canvas.atlas_texture(ATLAS_PAGE_SIZE)?;
+        let surface = canvas.surface(cols as u32 * cell_w as u32, rows as u32 * cell_h as u32)?;
+        Ok(Self {
+            canvas,
+            atlas: Atlas::default(),
+            atlas_texture,
+            surface,
+            palette,
+            family: family.to_string(),
+            pt,
+            scale,
+            ascent: metrics.ascent,
+            cell_w,
+            cell_h,
+            cols,
+            rows,
+            cells: vec![GpuCell::default(); cols as usize * rows as usize],
+            baselines: vec![None; rows as usize],
+        })
+    }
+
+    pub fn cell_size(&self) -> (u16, u16) {
+        (self.cell_w, self.cell_h)
+    }
+
+    pub fn pixel_size(&self) -> (u32, u32) {
+        (self.surface.width(), self.surface.height())
+    }
+
+    /// Paint what changed since the last call and return the dirty rows.
+    /// `offset` scrolls the viewport into history; the cursor paints only at
+    /// the bottom (offset 0) and only while the mirror shows it.
+    pub fn paint(
+        &mut self,
+        mirror: &dyn TerminalStateMirror,
+        offset: usize,
+    ) -> Result<Vec<u16>, String> {
+        let show_cursor = mirror.modes().show_cursor && offset == 0;
+        let cursor = mirror.cursor();
+        let mut dirty: Vec<u16> = Vec::new();
+        for row in 0..self.rows {
+            let line = row as i32 - offset as i32;
+            let cells = mirror.line_cells(line);
+            let mut hash = row_hash(&cells);
+            let cursor_here = show_cursor && cursor.0 == row as usize;
+            if cursor_here {
+                hash ^= 0x9E37_79B9_7F4A_7C15u64.wrapping_add(cursor.1 as u64);
+            }
+            if self.baselines[row as usize] == Some(hash) {
+                continue;
+            }
+            let cursor_col = if cursor_here { Some(cursor.1) } else { None };
+            self.build_row(row, &cells, cursor_col)?;
+            self.baselines[row as usize] = Some(hash);
+            dirty.push(row);
+        }
+        let mut index = 0;
+        while index < dirty.len() {
+            let start = dirty[index];
+            let mut end = start;
+            while index + 1 < dirty.len() && dirty[index + 1] == end + 1 {
+                index += 1;
+                end = dirty[index];
+            }
+            self.canvas.paint(
+                &self.atlas_texture,
+                &self.surface,
+                &self.cells,
+                self.cols,
+                self.rows,
+                self.cell_w,
+                self.cell_h,
+                start,
+                end - start + 1,
+            )?;
+            index += 1;
+        }
+        Ok(dirty)
+    }
+
+    /// Everything repaints on the next call — a resize, theme change or a new
+    /// surface invalidates every baseline at once.
+    pub fn invalidate(&mut self) {
+        for baseline in &mut self.baselines {
+            *baseline = None;
+        }
+    }
+
+    pub fn read_pixels(&self) -> Result<Vec<u8>, String> {
+        self.canvas.surface_read(&self.surface)
+    }
+
+    fn build_row(
+        &mut self,
+        row: u16,
+        cells: &[TerminalCell],
+        cursor_col: Option<usize>,
+    ) -> Result<(), String> {
+        let ascent = self.ascent;
+        let (pt, scale, cell_w) = (self.pt, self.scale, self.cell_w);
+        let family = &self.family;
+        let canvas = &self.canvas;
+        let atlas_texture = &self.atlas_texture;
+        let atlas = &mut self.atlas;
+        let mut glyph = |cell: &TerminalCell| -> Option<GlyphPlacement> {
+            let key = GlyphKey::quantize(family, pt, scale, cell.ch as u32);
+            let slot = atlas
+                .ensure(
+                    &key,
+                    &mut |wanted: &GlyphKey| {
+                        canvas.raster_glyph(family, pt, scale, wanted.codepoint)
+                    },
+                    &mut |x, y, bitmap| canvas.atlas_upload(atlas_texture, x, y, bitmap),
+                )
+                .ok()?;
+            Some(GlyphPlacement {
+                x: slot.x,
+                y: slot.y,
+                w: slot.w,
+                h: slot.h,
+                left: slot.left,
+                top: (ascent - slot.top as f64).round() as i16,
+            })
+        };
+        let mut instances = row_instances(cells, cell_w, &self.palette, &mut glyph);
+        instances.truncate(self.cols as usize);
+        instances.resize(self.cols as usize, background_only(&self.palette));
+        if let Some(col) = cursor_col {
+            if col < instances.len() {
+                let cell = &mut instances[col];
+                std::mem::swap(&mut cell.fg, &mut cell.bg);
+            }
+        }
+        let base = row as usize * self.cols as usize;
+        self.cells[base..base + self.cols as usize].copy_from_slice(&instances);
+        Ok(())
+    }
+}
+
+fn background_only(palette: &Palette) -> GpuCell {
+    GpuCell { fg: palette.fg, bg: palette.bg, ..GpuCell::default() }
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv(hash: &mut u64, byte: u8) {
+    *hash ^= byte as u64;
+    *hash = hash.wrapping_mul(FNV_PRIME);
+}
+
+fn fnv32(hash: &mut u64, value: u32) {
+    for byte in value.to_le_bytes() {
+        fnv(hash, byte);
+    }
+}
+
+fn fnv_color(hash: &mut u64, color: TerminalColor) {
+    match color {
+        TerminalColor::Default => fnv(hash, 0),
+        TerminalColor::Named(index) => {
+            fnv(hash, 1);
+            fnv(hash, index);
+        }
+        TerminalColor::Indexed(index) => {
+            fnv(hash, 2);
+            fnv(hash, index);
+        }
+        TerminalColor::Rgb(r, g, b) => {
+            fnv(hash, 3);
+            fnv(hash, r);
+            fnv(hash, g);
+            fnv(hash, b);
+        }
+    }
+}
+
+/// What the row paints as, folded to one number. Two rows with the same hash
+/// paint identically, so an equal hash skips the row.
+fn row_hash(cells: &[TerminalCell]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for cell in cells {
+        fnv32(&mut hash, cell.ch as u32);
+        fnv_color(&mut hash, cell.fg);
+        fnv_color(&mut hash, cell.bg);
+        let bits = (cell.bold as u16)
+            | (cell.dim as u16) << 1
+            | (cell.italic as u16) << 2
+            | (cell.underline as u16) << 3
+            | (cell.inverse as u16) << 4
+            | (cell.strikeout as u16) << 5
+            | (cell.hidden as u16) << 6
+            | (cell.wide as u16) << 7
+            | (cell.spacer as u16) << 8;
+        fnv(&mut hash, bits as u8);
+        fnv(&mut hash, (bits >> 8) as u8);
+        for zero in &cell.zerowidth {
+            fnv32(&mut hash, *zero as u32);
+        }
+        if let Some(link) = &cell.link {
+            fnv(&mut hash, 1);
+            for byte in link.as_bytes() {
+                fnv(&mut hash, *byte);
+            }
+        } else {
+            fnv(&mut hash, 0);
+        }
+    }
+    hash
+}

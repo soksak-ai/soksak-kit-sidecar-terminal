@@ -7,3 +7,5 @@
 pub mod atlas;
 pub mod instances;
 pub mod native;
+#[cfg(target_os = "macos")]
+pub mod painter;
