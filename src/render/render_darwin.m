@@ -592,3 +592,226 @@ uint32_t soksak_canvas_surface_mach_port(SoksakSurface *surface) {
     }
     return (uint32_t)IOSurfaceCreateMachPort(surface->surface);
 }
+
+#import <servers/bootstrap.h>
+
+struct SoksakChannel {
+    mach_port_t peer;
+    mach_port_t reply;
+};
+
+struct SoksakChannelHost {
+    mach_port_t service;
+};
+
+enum { kSoksakChannelMaxPayload = 4096, kSoksakChannelMaxPorts = 4 };
+
+// Transport framing: a u32 payload length precedes the contract bytes, so the
+// mach round-up padding never leaks into the wire the contract decodes.
+static int32_t soksakMachSend(mach_port_t to, const uint8_t *bytes, uint64_t len,
+                              const mach_port_t *ports,
+                              const mach_msg_type_name_t *dispositions, uint32_t portCount) {
+    if (to == MACH_PORT_NULL || bytes == NULL || len > kSoksakChannelMaxPayload ||
+        portCount > kSoksakChannelMaxPorts) {
+        return -2;
+    }
+    uint8_t buffer[sizeof(mach_msg_header_t) + sizeof(mach_msg_body_t) +
+                   kSoksakChannelMaxPorts * sizeof(mach_msg_port_descriptor_t) + 4 +
+                   kSoksakChannelMaxPayload + 16];
+    memset(buffer, 0, sizeof(buffer));
+    mach_msg_header_t *header = (mach_msg_header_t *)buffer;
+    uint8_t *cursor = buffer + sizeof(mach_msg_header_t);
+    if (portCount > 0) {
+        mach_msg_body_t *body = (mach_msg_body_t *)cursor;
+        body->msgh_descriptor_count = portCount;
+        cursor += sizeof(mach_msg_body_t);
+        for (uint32_t index = 0; index < portCount; index++) {
+            mach_msg_port_descriptor_t *descriptor = (mach_msg_port_descriptor_t *)cursor;
+            descriptor->name = ports[index];
+            descriptor->disposition = dispositions[index];
+            descriptor->type = MACH_MSG_PORT_DESCRIPTOR;
+            cursor += sizeof(mach_msg_port_descriptor_t);
+        }
+    }
+    uint32_t payloadLen = (uint32_t)len;
+    memcpy(cursor, &payloadLen, 4);
+    cursor += 4;
+    memcpy(cursor, bytes, len);
+    cursor += len;
+    mach_msg_size_t size = (mach_msg_size_t)round_msg((uintptr_t)cursor - (uintptr_t)buffer);
+    header->msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+    if (portCount > 0) {
+        header->msgh_bits |= MACH_MSGH_BITS_COMPLEX;
+    }
+    header->msgh_size = size;
+    header->msgh_remote_port = to;
+    header->msgh_local_port = MACH_PORT_NULL;
+    header->msgh_id = 0x736B7366; // 'sksf'
+    kern_return_t code = mach_msg(header, MACH_SEND_MSG, size, 0, MACH_PORT_NULL,
+                                  MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    return code == KERN_SUCCESS ? 0 : -3;
+}
+
+static int32_t soksakMachRecv(mach_port_t on, uint8_t *out, uint64_t cap, uint64_t *outLen,
+                              uint32_t *portsOut, uint32_t *portCountOut, int32_t timeoutMs) {
+    if (on == MACH_PORT_NULL || out == NULL || outLen == NULL) {
+        return -2;
+    }
+    uint8_t buffer[sizeof(mach_msg_header_t) + sizeof(mach_msg_body_t) +
+                   kSoksakChannelMaxPorts * sizeof(mach_msg_port_descriptor_t) + 4 +
+                   kSoksakChannelMaxPayload + sizeof(mach_msg_max_trailer_t) + 64];
+    mach_msg_header_t *header = (mach_msg_header_t *)buffer;
+    mach_msg_option_t options = MACH_RCV_MSG;
+    mach_msg_timeout_t timeout = MACH_MSG_TIMEOUT_NONE;
+    if (timeoutMs >= 0) {
+        options |= MACH_RCV_TIMEOUT;
+        timeout = (mach_msg_timeout_t)timeoutMs;
+    }
+    kern_return_t code =
+        mach_msg(header, options, 0, sizeof(buffer), on, timeout, MACH_PORT_NULL);
+    if (code == MACH_RCV_TIMED_OUT) {
+        return 1;
+    }
+    if (code != KERN_SUCCESS) {
+        return -3;
+    }
+    uint8_t *cursor = buffer + sizeof(mach_msg_header_t);
+    uint32_t ports = 0;
+    if (header->msgh_bits & MACH_MSGH_BITS_COMPLEX) {
+        mach_msg_body_t *body = (mach_msg_body_t *)cursor;
+        cursor += sizeof(mach_msg_body_t);
+        for (uint32_t index = 0; index < body->msgh_descriptor_count; index++) {
+            mach_msg_port_descriptor_t *descriptor = (mach_msg_port_descriptor_t *)cursor;
+            if (descriptor->type == MACH_MSG_PORT_DESCRIPTOR && portsOut != NULL &&
+                ports < kSoksakChannelMaxPorts) {
+                portsOut[ports++] = descriptor->name;
+            }
+            cursor += sizeof(mach_msg_port_descriptor_t);
+        }
+    }
+    uint32_t payloadLen = 0;
+    memcpy(&payloadLen, cursor, 4);
+    cursor += 4;
+    if (payloadLen > cap || payloadLen > kSoksakChannelMaxPayload) {
+        return -4;
+    }
+    memcpy(out, cursor, payloadLen);
+    *outLen = payloadLen;
+    if (portCountOut != NULL) {
+        *portCountOut = ports;
+    }
+    return 0;
+}
+
+SoksakChannel *soksak_channel_open(const char *bootstrapName) {
+    if (bootstrapName == NULL) {
+        return NULL;
+    }
+    mach_port_t peer = MACH_PORT_NULL;
+    if (bootstrap_look_up(bootstrap_port, bootstrapName, &peer) != KERN_SUCCESS) {
+        return NULL;
+    }
+    mach_port_t reply = MACH_PORT_NULL;
+    if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &reply) != KERN_SUCCESS) {
+        mach_port_deallocate(mach_task_self(), peer);
+        return NULL;
+    }
+    SoksakChannel *channel = calloc(1, sizeof(SoksakChannel));
+    channel->peer = peer;
+    channel->reply = reply;
+    return channel;
+}
+
+void soksak_channel_close(SoksakChannel *channel) {
+    if (channel == NULL) {
+        return;
+    }
+    if (channel->peer != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), channel->peer);
+    }
+    if (channel->reply != MACH_PORT_NULL) {
+        mach_port_mod_refs(mach_task_self(), channel->reply, MACH_PORT_RIGHT_RECEIVE, -1);
+    }
+    free(channel);
+}
+
+int32_t soksak_channel_send_hello(SoksakChannel *channel, const uint8_t *bytes, uint64_t len) {
+    if (channel == NULL) {
+        return -1;
+    }
+    mach_port_t ports[1] = {channel->reply};
+    mach_msg_type_name_t dispositions[1] = {MACH_MSG_TYPE_MAKE_SEND};
+    return soksakMachSend(channel->peer, bytes, len, ports, dispositions, 1);
+}
+
+int32_t soksak_channel_send_surfaces(SoksakChannel *channel, const uint8_t *bytes, uint64_t len,
+                                     const uint32_t *ports, uint32_t portCount) {
+    if (channel == NULL || ports == NULL || portCount == 0) {
+        return -1;
+    }
+    mach_port_t moved[kSoksakChannelMaxPorts];
+    mach_msg_type_name_t dispositions[kSoksakChannelMaxPorts];
+    if (portCount > kSoksakChannelMaxPorts) {
+        return -2;
+    }
+    for (uint32_t index = 0; index < portCount; index++) {
+        moved[index] = ports[index];
+        dispositions[index] = MACH_MSG_TYPE_MOVE_SEND;
+    }
+    return soksakMachSend(channel->peer, bytes, len, moved, dispositions, portCount);
+}
+
+int32_t soksak_channel_send_bytes(SoksakChannel *channel, const uint8_t *bytes, uint64_t len) {
+    if (channel == NULL) {
+        return -1;
+    }
+    return soksakMachSend(channel->peer, bytes, len, NULL, NULL, 0);
+}
+
+int32_t soksak_channel_recv(SoksakChannel *channel, uint8_t *out, uint64_t cap, uint64_t *outLen,
+                            int32_t timeoutMs) {
+    if (channel == NULL) {
+        return -1;
+    }
+    return soksakMachRecv(channel->reply, out, cap, outLen, NULL, NULL, timeoutMs);
+}
+
+SoksakChannelHost *soksak_channel_host_check_in(const char *bootstrapName) {
+    if (bootstrapName == NULL) {
+        return NULL;
+    }
+    mach_port_t service = MACH_PORT_NULL;
+    if (bootstrap_check_in(bootstrap_port, bootstrapName, &service) != KERN_SUCCESS) {
+        return NULL;
+    }
+    SoksakChannelHost *host = calloc(1, sizeof(SoksakChannelHost));
+    host->service = service;
+    return host;
+}
+
+void soksak_channel_host_close(SoksakChannelHost *host) {
+    if (host == NULL) {
+        return;
+    }
+    if (host->service != MACH_PORT_NULL) {
+        mach_port_mod_refs(mach_task_self(), host->service, MACH_PORT_RIGHT_RECEIVE, -1);
+    }
+    free(host);
+}
+
+int32_t soksak_channel_host_recv(SoksakChannelHost *host, uint8_t *out, uint64_t cap,
+                                 uint64_t *outLen, uint32_t *ports, uint32_t *portCount,
+                                 int32_t timeoutMs) {
+    if (host == NULL) {
+        return -1;
+    }
+    return soksakMachRecv(host->service, out, cap, outLen, ports, portCount, timeoutMs);
+}
+
+int32_t soksak_channel_host_send(SoksakChannelHost *host, uint32_t port, const uint8_t *bytes,
+                                 uint64_t len) {
+    if (host == NULL || port == MACH_PORT_NULL) {
+        return -1;
+    }
+    return soksakMachSend((mach_port_t)port, bytes, len, NULL, NULL, 0);
+}

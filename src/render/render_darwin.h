@@ -61,3 +61,29 @@ int32_t soksak_canvas_surface_read(SoksakSurface *surface, uint8_t *bgra, uint64
 // The surface as a mach send right, for the channel to hand the application.
 // Zero on failure.
 uint32_t soksak_canvas_surface_mach_port(SoksakSurface *surface);
+
+// The mach half of the surface channel. The sidecar looks the application's
+// bootstrap name up and sends; the application's own half lives in its
+// service — the host functions here exist for conformance tests only.
+typedef struct SoksakChannel SoksakChannel;
+typedef struct SoksakChannelHost SoksakChannelHost;
+
+SoksakChannel *soksak_channel_open(const char *bootstrapName);
+void soksak_channel_close(SoksakChannel *channel);
+// hello: the channel's own reply receive right rides along as a send right.
+int32_t soksak_channel_send_hello(SoksakChannel *channel, const uint8_t *bytes, uint64_t len);
+// ring: the surface send rights move to the application.
+int32_t soksak_channel_send_surfaces(SoksakChannel *channel, const uint8_t *bytes, uint64_t len,
+                                     const uint32_t *ports, uint32_t portCount);
+int32_t soksak_channel_send_bytes(SoksakChannel *channel, const uint8_t *bytes, uint64_t len);
+// 0 = a message landed, 1 = timeout, negative = the failing stage.
+int32_t soksak_channel_recv(SoksakChannel *channel, uint8_t *out, uint64_t cap, uint64_t *outLen,
+                            int32_t timeoutMs);
+
+SoksakChannelHost *soksak_channel_host_check_in(const char *bootstrapName);
+void soksak_channel_host_close(SoksakChannelHost *host);
+int32_t soksak_channel_host_recv(SoksakChannelHost *host, uint8_t *out, uint64_t cap,
+                                 uint64_t *outLen, uint32_t *ports, uint32_t *portCount,
+                                 int32_t timeoutMs);
+int32_t soksak_channel_host_send(SoksakChannelHost *host, uint32_t port, const uint8_t *bytes,
+                                 uint64_t len);

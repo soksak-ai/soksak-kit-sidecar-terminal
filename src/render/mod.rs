@@ -8,6 +8,8 @@ pub mod atlas;
 pub mod instances;
 pub mod native;
 #[cfg(target_os = "macos")]
+pub mod channel;
+#[cfg(target_os = "macos")]
 pub mod painter;
 #[cfg(target_os = "macos")]
 pub mod surface_ring;
