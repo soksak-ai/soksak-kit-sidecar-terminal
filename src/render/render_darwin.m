@@ -11,6 +11,7 @@
 struct SoksakCanvas {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
+    id<MTLComputePipelineState> cellPipeline;
 };
 
 SoksakCanvas *soksak_canvas_create(void) {
@@ -34,6 +35,7 @@ void soksak_canvas_free(SoksakCanvas *canvas) {
     }
     canvas->device = nil;
     canvas->queue = nil;
+    canvas->cellPipeline = nil;
     free(canvas);
 }
 
@@ -303,33 +305,283 @@ int32_t soksak_canvas_raster_glyph(SoksakCanvas *canvas, const char *family, dou
             count = 2;
         }
         CGGlyph glyphs[2] = {0, 0};
-        if (!CTFontGetGlyphsForCharacters(font, units, glyphs, count)) {
-            return -4; // the face holds no glyph; fallback faces arrive later
+        CTFontRef face = font;
+        bool ownsFace = false;
+        if (!CTFontGetGlyphsForCharacters(font, units, glyphs, count) || glyphs[0] == 0) {
+            // The primary face has no glyph here; CoreText names the face the
+            // system would substitute, and the cell metrics stay primary.
+            CFStringRef text = CFStringCreateWithCharacters(NULL, units, count);
+            if (text == NULL) {
+                return -4;
+            }
+            CTFontRef fallback = CTFontCreateForString(font, text, CFRangeMake(0, count));
+            CFRelease(text);
+            if (fallback == NULL) {
+                return -4;
+            }
+            if (!CTFontGetGlyphsForCharacters(fallback, units, glyphs, count) || glyphs[0] == 0) {
+                CFRelease(fallback);
+                return -4;
+            }
+            face = fallback;
+            ownsFace = true;
         }
+        int32_t result = 0;
         CGGlyph glyph = glyphs[0];
-        CGRect bounds = CTFontGetBoundingRectsForGlyphs(font, kCTFontOrientationHorizontal,
+        CGRect bounds = CTFontGetBoundingRectsForGlyphs(face, kCTFontOrientationHorizontal,
                                                         &glyph, NULL, 1);
         uint32_t width = (uint32_t)ceil(bounds.size.width) + 2;
         uint32_t height = (uint32_t)ceil(bounds.size.height) + 2;
         if (width > capW || height > capH) {
+            result = -5;
+        } else {
+            memset(coverage, 0, (size_t)capW * capH);
+            CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
+            CGContextRef bitmap = CGBitmapContextCreate(coverage, width, height, 8, capW, gray,
+                                                        (CGBitmapInfo)kCGImageAlphaNone);
+            CGColorSpaceRelease(gray);
+            if (bitmap == NULL) {
+                result = -6;
+            } else {
+                CGContextSetGrayFillColor(bitmap, 1.0, 1.0);
+                CGPoint position = CGPointMake(-bounds.origin.x + 1.0, -bounds.origin.y + 1.0);
+                CTFontDrawGlyphs(face, &glyph, &position, 1, bitmap);
+                CGContextRelease(bitmap);
+                placed->width = width;
+                placed->height = height;
+                placed->left = (int32_t)floor(bounds.origin.x) - 1;
+                placed->top = (int32_t)ceil(bounds.origin.y + bounds.size.height) + 1;
+            }
+        }
+        if (ownsFace) {
+            CFRelease(face);
+        }
+        return result;
+    }
+}
+
+struct SoksakAtlas {
+    id<MTLTexture> texture;
+};
+
+struct SoksakSurface {
+    IOSurfaceRef surface;
+    id<MTLTexture> texture;
+    uint32_t width;
+    uint32_t height;
+};
+
+SoksakAtlas *soksak_canvas_atlas_create(SoksakCanvas *canvas, uint32_t size) {
+    if (canvas == NULL || size == 0) {
+        return NULL;
+    }
+    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                     width:size
+                                    height:size
+                                 mipmapped:NO];
+    descriptor.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> texture = [canvas->device newTextureWithDescriptor:descriptor];
+    if (texture == nil) {
+        return NULL;
+    }
+    SoksakAtlas *atlas = calloc(1, sizeof(SoksakAtlas));
+    atlas->texture = texture;
+    return atlas;
+}
+
+void soksak_canvas_atlas_free(SoksakAtlas *atlas) {
+    if (atlas == NULL) {
+        return;
+    }
+    atlas->texture = nil;
+    free(atlas);
+}
+
+int32_t soksak_canvas_atlas_upload(SoksakAtlas *atlas, uint32_t x, uint32_t y, uint32_t w,
+                                   uint32_t h, const uint8_t *coverage, uint32_t stride) {
+    if (atlas == NULL || coverage == NULL || w == 0 || h == 0) {
+        return -1;
+    }
+    if (x + w > atlas->texture.width || y + h > atlas->texture.height) {
+        return -2;
+    }
+    [atlas->texture replaceRegion:MTLRegionMake2D(x, y, w, h)
+                      mipmapLevel:0
+                        withBytes:coverage
+                      bytesPerRow:stride];
+    return 0;
+}
+
+SoksakSurface *soksak_canvas_surface_create(SoksakCanvas *canvas, uint32_t width,
+                                            uint32_t height) {
+    if (canvas == NULL || width == 0 || height == 0) {
+        return NULL;
+    }
+    NSDictionary *properties = @{
+        (__bridge NSString *)kIOSurfaceWidth : @(width),
+        (__bridge NSString *)kIOSurfaceHeight : @(height),
+        (__bridge NSString *)kIOSurfaceBytesPerElement : @4,
+        (__bridge NSString *)kIOSurfacePixelFormat : @((uint32_t)'BGRA'),
+    };
+    IOSurfaceRef ioSurface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
+    if (ioSurface == NULL) {
+        return NULL;
+    }
+    MTLTextureDescriptor *descriptor = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                     width:width
+                                    height:height
+                                 mipmapped:NO];
+    descriptor.usage = MTLTextureUsageShaderWrite;
+    id<MTLTexture> texture = [canvas->device newTextureWithDescriptor:descriptor
+                                                            iosurface:ioSurface
+                                                                plane:0];
+    if (texture == nil) {
+        CFRelease(ioSurface);
+        return NULL;
+    }
+    SoksakSurface *surface = calloc(1, sizeof(SoksakSurface));
+    surface->surface = ioSurface;
+    surface->texture = texture;
+    surface->width = width;
+    surface->height = height;
+    return surface;
+}
+
+void soksak_canvas_surface_free(SoksakSurface *surface) {
+    if (surface == NULL) {
+        return;
+    }
+    surface->texture = nil;
+    if (surface->surface != NULL) {
+        CFRelease(surface->surface);
+    }
+    free(surface);
+}
+
+// One thread per pixel of the dirty band: paint the cell background, mix glyph
+// coverage over it, then the underline and strikeout bands.
+static NSString *const kCellShader = @""
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct Cell { ushort gx, gy, gw, gh; short inkL, inkT;\n"
+    "              uint fg, bg, flags, link, reserved; };\n"
+    "struct Params { uint cols; uint cellW; uint cellH; uint rowStart; uint rowCount; };\n"
+    "static float4 unpackColor(uint value) {\n"
+    "    return float4(float((value >> 16) & 255u), float((value >> 8) & 255u),\n"
+    "                  float(value & 255u), float((value >> 24) & 255u)) / 255.0;\n"
+    "}\n"
+    "kernel void paintCells(texture2d<float, access::write> out [[texture(0)]],\n"
+    "                       texture2d<float, access::read> atlas [[texture(1)]],\n"
+    "                       const device Cell *cells [[buffer(0)]],\n"
+    "                       constant Params &p [[buffer(1)]],\n"
+    "                       uint2 gid [[thread_position_in_grid]]) {\n"
+    "    if (gid.x >= p.cols * p.cellW || gid.y >= p.rowCount * p.cellH) { return; }\n"
+    "    uint absY = p.rowStart * p.cellH + gid.y;\n"
+    "    if (gid.x >= out.get_width() || absY >= out.get_height()) { return; }\n"
+    "    uint cx = gid.x / p.cellW;\n"
+    "    uint cy = p.rowStart + gid.y / p.cellH;\n"
+    "    Cell cell = cells[cy * p.cols + cx];\n"
+    "    float4 color = unpackColor(cell.bg);\n"
+    "    int lx = int(gid.x % p.cellW) - int(cell.inkL);\n"
+    "    int ly = int(gid.y % p.cellH) - int(cell.inkT);\n"
+    "    if (cell.gw > 0 && lx >= 0 && lx < int(cell.gw) && ly >= 0 && ly < int(cell.gh)) {\n"
+    "        float coverage = atlas.read(uint2(uint(int(cell.gx) + lx), uint(int(cell.gy) + ly))).r;\n"
+    "        color = mix(color, unpackColor(cell.fg), coverage);\n"
+    "    }\n"
+    "    uint yy = gid.y % p.cellH;\n"
+    "    if ((cell.flags & 1u) != 0u && yy >= p.cellH - 2u) { color = unpackColor(cell.fg); }\n"
+    "    if ((cell.flags & 2u) != 0u && yy == p.cellH / 2u) { color = unpackColor(cell.fg); }\n"
+    "    out.write(color, uint2(gid.x, absY));\n"
+    "}\n";
+
+typedef struct {
+    uint32_t cols;
+    uint32_t cellW;
+    uint32_t cellH;
+    uint32_t rowStart;
+    uint32_t rowCount;
+} SoksakPaintParams;
+
+int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurface *surface,
+                            const void *cells, uint32_t cols, uint32_t rows, uint32_t cellW,
+                            uint32_t cellH, uint32_t rowStart, uint32_t rowCount) {
+    if (canvas == NULL || atlas == NULL || surface == NULL || cells == NULL) {
+        return -1;
+    }
+    if (cols == 0 || rows == 0 || cellW == 0 || cellH == 0 || rowCount == 0 ||
+        rowStart + rowCount > rows) {
+        return -2;
+    }
+    @autoreleasepool {
+        if (canvas->cellPipeline == nil) {
+            NSError *error = nil;
+            id<MTLLibrary> library = [canvas->device newLibraryWithSource:kCellShader
+                                                                  options:nil
+                                                                    error:&error];
+            if (library == nil) {
+                return -3;
+            }
+            id<MTLFunction> function = [library newFunctionWithName:@"paintCells"];
+            if (function != nil) {
+                canvas->cellPipeline =
+                    [canvas->device newComputePipelineStateWithFunction:function error:&error];
+            }
+            if (canvas->cellPipeline == nil) {
+                return -4;
+            }
+        }
+        id<MTLBuffer> cellBuffer =
+            [canvas->device newBufferWithBytes:cells
+                                        length:(NSUInteger)cols * rows * 32
+                                       options:MTLResourceStorageModeShared];
+        SoksakPaintParams params = {
+            .cols = cols, .cellW = cellW, .cellH = cellH, .rowStart = rowStart,
+            .rowCount = rowCount,
+        };
+        id<MTLBuffer> paramsBuffer = [canvas->device newBufferWithBytes:&params
+                                                                 length:sizeof(params)
+                                                                options:MTLResourceStorageModeShared];
+        if (cellBuffer == nil || paramsBuffer == nil) {
             return -5;
         }
-        memset(coverage, 0, (size_t)capW * capH);
-        CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
-        CGContextRef bitmap = CGBitmapContextCreate(coverage, width, height, 8, capW, gray,
-                                                    (CGBitmapInfo)kCGImageAlphaNone);
-        CGColorSpaceRelease(gray);
-        if (bitmap == NULL) {
+        id<MTLCommandBuffer> commands = [canvas->queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [commands computeCommandEncoder];
+        if (commands == nil || encoder == nil) {
             return -6;
         }
-        CGContextSetGrayFillColor(bitmap, 1.0, 1.0);
-        CGPoint position = CGPointMake(-bounds.origin.x + 1.0, -bounds.origin.y + 1.0);
-        CTFontDrawGlyphs(font, &glyph, &position, 1, bitmap);
-        CGContextRelease(bitmap);
-        placed->width = width;
-        placed->height = height;
-        placed->left = (int32_t)floor(bounds.origin.x) - 1;
-        placed->top = (int32_t)ceil(bounds.origin.y + bounds.size.height) + 1;
+        [encoder setComputePipelineState:canvas->cellPipeline];
+        [encoder setTexture:surface->texture atIndex:0];
+        [encoder setTexture:atlas->texture atIndex:1];
+        [encoder setBuffer:cellBuffer offset:0 atIndex:0];
+        [encoder setBuffer:paramsBuffer offset:0 atIndex:1];
+        [encoder dispatchThreads:MTLSizeMake(cols * cellW, rowCount * cellH, 1)
+            threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+        [encoder endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
         return 0;
     }
+}
+
+int32_t soksak_canvas_surface_read(SoksakSurface *surface, uint8_t *bgra, uint64_t cap) {
+    if (surface == NULL || bgra == NULL) {
+        return -1;
+    }
+    uint64_t needed = (uint64_t)surface->width * surface->height * 4;
+    if (cap < needed) {
+        return -2;
+    }
+    if (IOSurfaceLock(surface->surface, kIOSurfaceLockReadOnly, NULL) != kIOReturnSuccess) {
+        return -3;
+    }
+    const uint8_t *base = IOSurfaceGetBaseAddress(surface->surface);
+    size_t stride = IOSurfaceGetBytesPerRow(surface->surface);
+    for (uint32_t y = 0; y < surface->height; y++) {
+        memcpy(bgra + (uint64_t)y * surface->width * 4, base + (uint64_t)y * stride,
+               (size_t)surface->width * 4);
+    }
+    IOSurfaceUnlock(surface->surface, kIOSurfaceLockReadOnly, NULL);
+    return 0;
 }

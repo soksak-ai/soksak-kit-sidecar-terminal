@@ -32,3 +32,12 @@ fn a_missing_face_refuses_by_name() {
     let refusal = canvas.font_metrics("NoSuchFace-SoksakProbe", 13.0, 2.0);
     assert!(refusal.is_err(), "an unknown face is refused, not substituted");
 }
+
+#[test]
+fn a_glyph_the_face_lacks_rasters_through_the_fallback() {
+    let canvas = Canvas::create().expect("a Metal device exists on this host");
+    let bitmap = canvas
+        .raster_glyph("Menlo", 13.0, 2.0, '한' as u32)
+        .expect("hangul rasters through the system fallback");
+    assert!(bitmap.w > 0 && bitmap.coverage.iter().any(|&byte| byte > 128));
+}
