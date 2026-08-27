@@ -198,3 +198,138 @@ int32_t soksak_canvas_spike(SoksakCanvas *canvas, uint32_t width, uint32_t heigh
         return 0;
     }
 }
+
+// One CTFont per (family, pt × scale) for the life of the process; every pane
+// and every glyph of that face shares it.
+static CTFontRef soksakFontFor(const char *family, double pt, double scale, bool *exact) {
+    static NSMutableDictionary<NSString *, id> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSMutableDictionary new]; });
+    NSString *name = [NSString stringWithUTF8String:family];
+    if (name == nil) {
+        return NULL;
+    }
+    double px = pt * scale;
+    NSString *key = [NSString stringWithFormat:@"%@/%.3f", name, px];
+    @synchronized(cache) {
+        id held = cache[key];
+        if (held != nil) {
+            *exact = true;
+            return (__bridge CTFontRef)held;
+        }
+    }
+    CTFontRef font = CTFontCreateWithName((__bridge CFStringRef)name, px, NULL);
+    if (font == NULL) {
+        return NULL;
+    }
+    // CoreText substitutes a default face for unknown names; a substituted
+    // family is a refusal here, not a fallback (P5).
+    NSString *resolved = CFBridgingRelease(CTFontCopyFamilyName(font));
+    NSString *postscript = CFBridgingRelease(CTFontCopyPostScriptName(font));
+    bool matches = [resolved caseInsensitiveCompare:name] == NSOrderedSame ||
+                   [postscript caseInsensitiveCompare:name] == NSOrderedSame ||
+                   [postscript hasPrefix:[name stringByReplacingOccurrencesOfString:@" "
+                                                                         withString:@""]];
+    if (!matches) {
+        CFRelease(font);
+        *exact = false;
+        return NULL;
+    }
+    @synchronized(cache) {
+        // Two threads can miss together; the first stored font wins and the
+        // loser's copy is released here — never the winner's, which callers
+        // already hold.
+        id held = cache[key];
+        if (held != nil) {
+            CFRelease(font);
+            *exact = true;
+            return (__bridge CTFontRef)held;
+        }
+        cache[key] = (__bridge_transfer id)font;
+        *exact = true;
+        return (__bridge CTFontRef)cache[key];
+    }
+}
+
+int32_t soksak_canvas_font_metrics(SoksakCanvas *canvas, const char *family, double pt,
+                                   double scale, SoksakFontMetrics *out) {
+    if (canvas == NULL || family == NULL || out == NULL || pt <= 0 || scale <= 0) {
+        return -1;
+    }
+    @autoreleasepool {
+        bool exact = false;
+        CTFontRef font = soksakFontFor(family, pt, scale, &exact);
+        if (font == NULL) {
+            return exact ? -2 : -3; // -3: the face is unknown on this host
+        }
+        UniChar reference = 'M';
+        CGGlyph glyph = 0;
+        if (!CTFontGetGlyphsForCharacters(font, &reference, &glyph, 1)) {
+            return -4;
+        }
+        CGSize advance = CGSizeZero;
+        CTFontGetAdvancesForGlyphs(font, kCTFontOrientationHorizontal, &glyph, &advance, 1);
+        double ascent = CTFontGetAscent(font);
+        double descent = CTFontGetDescent(font);
+        double leading = CTFontGetLeading(font);
+        out->cellW = advance.width;
+        out->cellH = ceil(ascent + descent + leading);
+        out->ascent = ascent;
+        return 0;
+    }
+}
+
+int32_t soksak_canvas_raster_glyph(SoksakCanvas *canvas, const char *family, double pt,
+                                   double scale, uint32_t codepoint, uint8_t *coverage,
+                                   uint32_t capW, uint32_t capH, SoksakGlyphBitmap *placed) {
+    if (canvas == NULL || family == NULL || coverage == NULL || placed == NULL) {
+        return -1;
+    }
+    @autoreleasepool {
+        bool exact = false;
+        CTFontRef font = soksakFontFor(family, pt, scale, &exact);
+        if (font == NULL) {
+            return exact ? -2 : -3;
+        }
+        UniChar units[2];
+        CFIndex count = 0;
+        if (codepoint <= 0xFFFF) {
+            units[0] = (UniChar)codepoint;
+            count = 1;
+        } else {
+            uint32_t value = codepoint - 0x10000;
+            units[0] = (UniChar)(0xD800 + (value >> 10));
+            units[1] = (UniChar)(0xDC00 + (value & 0x3FF));
+            count = 2;
+        }
+        CGGlyph glyphs[2] = {0, 0};
+        if (!CTFontGetGlyphsForCharacters(font, units, glyphs, count)) {
+            return -4; // the face holds no glyph; fallback faces arrive later
+        }
+        CGGlyph glyph = glyphs[0];
+        CGRect bounds = CTFontGetBoundingRectsForGlyphs(font, kCTFontOrientationHorizontal,
+                                                        &glyph, NULL, 1);
+        uint32_t width = (uint32_t)ceil(bounds.size.width) + 2;
+        uint32_t height = (uint32_t)ceil(bounds.size.height) + 2;
+        if (width > capW || height > capH) {
+            return -5;
+        }
+        memset(coverage, 0, (size_t)capW * capH);
+        CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
+        CGContextRef bitmap = CGBitmapContextCreate(coverage, width, height, 8, capW, gray,
+                                                    (CGBitmapInfo)kCGImageAlphaNone);
+        CGColorSpaceRelease(gray);
+        if (bitmap == NULL) {
+            return -6;
+        }
+        CGContextSetGrayFillColor(bitmap, 1.0, 1.0);
+        CGPoint position = CGPointMake(-bounds.origin.x + 1.0, -bounds.origin.y + 1.0);
+        CTFontDrawGlyphs(font, &glyph, &position, 1, bitmap);
+        CGContextRelease(bitmap);
+        placed->width = width;
+        placed->height = height;
+        placed->left = (int32_t)floor(bounds.origin.x) - 1;
+        placed->top = (int32_t)ceil(bounds.origin.y + bounds.size.height) + 1;
+        return 0;
+    }
+}

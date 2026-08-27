@@ -14,3 +14,24 @@ void soksak_canvas_free(SoksakCanvas *canvas);
 // value names the failing stage.
 int32_t soksak_canvas_spike(SoksakCanvas *canvas, uint32_t width, uint32_t height,
                             uint64_t *ink_pixels);
+
+// Monospace cell geometry for a face at pt × scale device pixels.
+typedef struct SoksakFontMetrics {
+    double cellW;
+    double cellH;
+    double ascent;
+} SoksakFontMetrics;
+int32_t soksak_canvas_font_metrics(SoksakCanvas *canvas, const char *family, double pt,
+                                   double scale, SoksakFontMetrics *out);
+
+// Raster one codepoint's coverage at pt × scale into the caller's buffer
+// (capW × capH bytes). Reports the placed bitmap and its baseline offsets.
+typedef struct SoksakGlyphBitmap {
+    uint32_t width;
+    uint32_t height;
+    int32_t left; // ink offset from the cell's left edge
+    int32_t top;  // ink offset up from the baseline
+} SoksakGlyphBitmap;
+int32_t soksak_canvas_raster_glyph(SoksakCanvas *canvas, const char *family, double pt,
+                                   double scale, uint32_t codepoint, uint8_t *coverage,
+                                   uint32_t capW, uint32_t capH, SoksakGlyphBitmap *placed);

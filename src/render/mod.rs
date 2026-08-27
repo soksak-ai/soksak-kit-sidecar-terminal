@@ -4,4 +4,5 @@
 //! `render_darwin.m` owns every Metal, CoreText and IOSurface call. Off macOS
 //! every entry refuses by name — there is no software path.
 
+pub mod atlas;
 pub mod native;

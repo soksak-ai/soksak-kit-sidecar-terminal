@@ -19,7 +19,50 @@ mod darwin {
             height: u32,
             ink_pixels: *mut u64,
         ) -> c_int;
+        pub(super) fn soksak_canvas_font_metrics(
+            canvas: *mut RawCanvas,
+            family: *const std::os::raw::c_char,
+            pt: f64,
+            scale: f64,
+            out: *mut RawFontMetrics,
+        ) -> c_int;
+        pub(super) fn soksak_canvas_raster_glyph(
+            canvas: *mut RawCanvas,
+            family: *const std::os::raw::c_char,
+            pt: f64,
+            scale: f64,
+            codepoint: u32,
+            coverage: *mut u8,
+            cap_w: u32,
+            cap_h: u32,
+            placed: *mut RawGlyphBitmap,
+        ) -> c_int;
     }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct RawFontMetrics {
+        pub cell_w: f64,
+        pub cell_h: f64,
+        pub ascent: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    pub(super) struct RawGlyphBitmap {
+        pub width: u32,
+        pub height: u32,
+        pub left: i32,
+        pub top: i32,
+    }
+}
+
+/// Monospace cell geometry measured by CoreText, in device pixels.
+#[cfg(target_os = "macos")]
+pub struct FontMetrics {
+    pub cell_w: f64,
+    pub cell_h: f64,
+    pub ascent: f64,
 }
 
 /// One Metal device, command queue and pipeline per process; every pane on the
@@ -54,6 +97,65 @@ impl Canvas {
             return Err(format!("SPIKE_STAGE_{code}: the canvas refused the probe"));
         }
         Ok(ink)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Canvas {
+    /// CoreText cell geometry for a face; an unknown face refuses by name.
+    pub fn font_metrics(&self, family: &str, pt: f64, scale: f64) -> Result<FontMetrics, String> {
+        let family = std::ffi::CString::new(family).map_err(|_| "FONT_NAME_INVALID".to_string())?;
+        let mut raw = darwin::RawFontMetrics::default();
+        let code = unsafe {
+            darwin::soksak_canvas_font_metrics(self.raw, family.as_ptr(), pt, scale, &mut raw)
+        };
+        if code != 0 {
+            return Err(format!("FONT_STAGE_{code}: the face did not measure"));
+        }
+        Ok(FontMetrics { cell_w: raw.cell_w, cell_h: raw.cell_h, ascent: raw.ascent })
+    }
+
+    /// One codepoint's coverage bitmap at pt × scale, with baseline offsets.
+    pub fn raster_glyph(
+        &self,
+        family: &str,
+        pt: f64,
+        scale: f64,
+        codepoint: u32,
+    ) -> Result<super::atlas::Bitmap, String> {
+        let family = std::ffi::CString::new(family).map_err(|_| "FONT_NAME_INVALID".to_string())?;
+        const CAP: u32 = 256;
+        let mut coverage = vec![0u8; (CAP * CAP) as usize];
+        let mut placed = darwin::RawGlyphBitmap::default();
+        let code = unsafe {
+            darwin::soksak_canvas_raster_glyph(
+                self.raw,
+                family.as_ptr(),
+                pt,
+                scale,
+                codepoint,
+                coverage.as_mut_ptr(),
+                CAP,
+                CAP,
+                &mut placed,
+            )
+        };
+        if code != 0 {
+            return Err(format!("GLYPH_STAGE_{code}: the glyph did not raster"));
+        }
+        let (w, h) = (placed.width as u16, placed.height as u16);
+        let mut packed = Vec::with_capacity(w as usize * h as usize);
+        for y in 0..h as usize {
+            let row = &coverage[y * CAP as usize..y * CAP as usize + w as usize];
+            packed.extend_from_slice(row);
+        }
+        Ok(super::atlas::Bitmap {
+            w,
+            h,
+            left: placed.left as i16,
+            top: placed.top as i16,
+            coverage: packed,
+        })
     }
 }
 
