@@ -2,131 +2,13 @@
 //! touched, wide glyphs cover both their cells, clean rows stay byte-stable.
 #![cfg(target_os = "macos")]
 
+mod common;
+
 use std::sync::Arc;
 
-use soksak_kit_sidecar_terminal::mirror::{
-    MirrorCapabilities, TerminalCell, TerminalColor, TerminalFrame, TerminalModes,
-};
-use soksak_kit_sidecar_terminal::render::instances::{pack_bgra, Palette};
+use common::{ink_in_cells, palette, GridMirror};
 use soksak_kit_sidecar_terminal::render::native::{Canvas, Surface};
-use soksak_kit_sidecar_terminal::render::painter::{Painter, TargetState};
-use soksak_kit_sidecar_terminal::TerminalStateMirror;
-
-fn plain(ch: char) -> TerminalCell {
-    TerminalCell {
-        ch,
-        fg: TerminalColor::Default,
-        bg: TerminalColor::Default,
-        bold: false,
-        dim: false,
-        italic: false,
-        underline: false,
-        inverse: false,
-        strikeout: false,
-        hidden: false,
-        wide: false,
-        spacer: false,
-        wrapline: false,
-        zerowidth: Vec::new(),
-        link: None,
-    }
-}
-
-struct GridMirror {
-    cols: u16,
-    grid: Vec<Vec<TerminalCell>>,
-}
-
-impl GridMirror {
-    fn from_rows(cols: u16, rows: &[&str]) -> Self {
-        let grid = rows
-            .iter()
-            .map(|text| {
-                let mut cells: Vec<TerminalCell> = Vec::new();
-                for ch in text.chars() {
-                    if ch == '\u{0}' {
-                        let mut spacer = plain(' ');
-                        spacer.spacer = true;
-                        cells.push(spacer);
-                        continue;
-                    }
-                    let mut cell = plain(ch);
-                    if (ch as u32) >= 0x1100 {
-                        cell.wide = true;
-                    }
-                    cells.push(cell);
-                }
-                while cells.len() < cols as usize {
-                    cells.push(plain(' '));
-                }
-                cells
-            })
-            .collect();
-        Self { cols, grid }
-    }
-}
-
-impl TerminalStateMirror for GridMirror {
-    fn feed(&mut self, _bytes: &[u8]) {}
-    fn resize(&mut self, _cols: u16, _rows: u16) {}
-    fn rehydrate(&self) -> Vec<u8> {
-        Vec::new()
-    }
-    fn cold_paint(&self) -> Vec<u8> {
-        Vec::new()
-    }
-    fn frame_at(&self, offset: usize) -> TerminalFrame {
-        TerminalFrame {
-            cols: self.cols,
-            rows: self.grid.len() as u16,
-            cursor: (0, 0),
-            cursor_visible: false,
-            alt_active: false,
-            history_size: 0,
-            offset,
-            modes: TerminalModes::default(),
-            lines: Vec::new(),
-        }
-    }
-    fn history_size(&self) -> usize {
-        0
-    }
-    fn modes(&self) -> TerminalModes {
-        TerminalModes::default()
-    }
-    fn capabilities(&self) -> MirrorCapabilities {
-        MirrorCapabilities::default()
-    }
-    fn alt_active(&self) -> bool {
-        false
-    }
-    fn suppressed_replies(&self) -> u64 {
-        0
-    }
-    fn cols(&self) -> u16 {
-        self.cols
-    }
-    fn rows(&self) -> u16 {
-        self.grid.len() as u16
-    }
-    fn cursor(&self) -> (usize, usize) {
-        (0, 0)
-    }
-    fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
-        if line < 0 {
-            return Vec::new();
-        }
-        self.grid.get(line as usize).cloned().unwrap_or_default()
-    }
-}
-
-fn palette() -> Palette {
-    Palette {
-        fg: pack_bgra(230, 230, 230, 255),
-        bg: pack_bgra(10, 10, 10, 255),
-        ansi: [pack_bgra(10, 10, 10, 255); 256],
-    }
-}
+use soksak_kit_sidecar_terminal::render::painter::{Painter, Preedit, TargetState};
 
 fn painter(cols: u16, rows: u16) -> (Painter, Surface, TargetState) {
     let canvas = Arc::new(Canvas::create().expect("a Metal device exists on this host"));
@@ -144,33 +26,12 @@ fn paint(
     state: &mut TargetState,
     mirror: &GridMirror,
 ) -> Vec<u16> {
-    painter.refresh(mirror, 0).expect("refreshes");
+    painter.refresh(mirror, 0, None).expect("refreshes");
     painter.paint_into(surface, state).expect("paints")
 }
 
 fn canvas_read(painter: &Painter, surface: &Surface) -> Vec<u8> {
     painter.canvas().surface_read(surface).expect("reads")
-}
-
-/// Ink pixels inside a cell-rect: anything that is not the dark background.
-fn ink_in_cells(
-    pixels: &[u8],
-    pixel_width: u32,
-    cell: (u16, u16),
-    col_range: std::ops::Range<u16>,
-    row: u16,
-) -> u64 {
-    let mut ink = 0;
-    for y in (row as u32 * cell.1 as u32)..((row as u32 + 1) * cell.1 as u32) {
-        for x in (col_range.start as u32 * cell.0 as u32)..(col_range.end as u32 * cell.0 as u32) {
-            let offset = ((y * pixel_width + x) * 4) as usize;
-            let pixel = &pixels[offset..offset + 3];
-            if pixel.iter().any(|&channel| channel > 32) {
-                ink += 1;
-            }
-        }
-    }
-    ink
 }
 
 #[test]
@@ -222,4 +83,35 @@ fn an_unchanged_screen_owes_no_rows() {
     paint(&mut painter, &surface, &mut state, &mirror);
     let dirty = paint(&mut painter, &surface, &mut state, &mirror);
     assert!(dirty.is_empty(), "nothing changed, nothing repaints: {dirty:?}");
+}
+
+
+#[test]
+fn preedit_paints_underlined_at_the_cursor_and_leaves_when_cleared() {
+    let (mut painter, surface, mut state) = painter(8, 1);
+    let mirror = GridMirror::from_rows(8, &["        "]);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let preedit = Preedit { text: "한".to_string(), cursor: 1 };
+    painter.refresh(&mirror, 0, Some(&preedit)).expect("refreshes");
+    let dirty = painter.paint_into(&surface, &mut state).expect("paints");
+    assert_eq!(dirty, vec![0], "the composition owes its row");
+    let pixels = canvas_read(&painter, &surface);
+    let (cell, (width, _)) = (painter.cell_size(), painter.pixel_size());
+    assert!(ink_in_cells(&pixels, width, cell, 0..2, 0) > 0, "the composition shows at the cursor");
+    let band = (cell.1 - 2) as u32..cell.1 as u32;
+    let mut underline = 0u64;
+    for y in band {
+        for x in 0..(2 * cell.0 as u32) {
+            let offset = ((y * width + x) * 4) as usize;
+            if pixels[offset..offset + 3].iter().any(|&channel| channel > 32) {
+                underline += 1;
+            }
+        }
+    }
+    assert!(underline >= 2 * cell.0 as u64, "the composition is underlined: {underline}");
+    painter.refresh(&mirror, 0, None).expect("refreshes");
+    let cleared = painter.paint_into(&surface, &mut state).expect("paints");
+    assert_eq!(cleared, vec![0], "clearing the composition owes the row again");
+    let after = canvas_read(&painter, &surface);
+    assert_eq!(ink_in_cells(&after, width, cell, 0..8, 0), 0, "the blank row returns");
 }
