@@ -140,7 +140,14 @@ impl Runtime {
             return Ok(false);
         }
         let observation = ObservationStream::subscribe(&self.runtime_root, info.session)?;
-        let mirror: SharedMirror = Arc::new(Mutex::new((self.factory)(cols, rows)));
+        let mirror = create_session_mirror(
+            self.factory,
+            self.checkpoints.as_deref(),
+            &key,
+            cols,
+            rows,
+            false,
+        );
         self.registry.lock().unwrap().insert(
             key.clone(),
             new_session_state(info, &observation, mirror.clone(), cols, rows),
@@ -243,7 +250,14 @@ impl Runtime {
         rows: u16,
     ) -> io::Result<()> {
         let key = (info.window_label.clone(), info.pane_id.clone());
-        let mirror: SharedMirror = Arc::new(Mutex::new((self.factory)(cols, rows)));
+        let mirror = create_session_mirror(
+            self.factory,
+            self.checkpoints.as_deref(),
+            &key,
+            cols,
+            rows,
+            true,
+        );
         self.registry.lock().unwrap().insert(
             key.clone(),
             new_session_state(info, &observation, mirror.clone(), cols, rows),
@@ -491,6 +505,27 @@ impl Runtime {
             });
         }
     }
+}
+
+fn create_session_mirror(
+    factory: MirrorFactory,
+    checkpoints: Option<&CheckpointStore>,
+    key: &PaneKey,
+    cols: u16,
+    rows: u16,
+    restore_archive: bool,
+) -> SharedMirror {
+    let mut mirror = factory(cols, rows);
+    if restore_archive {
+        let window = key.0.as_deref().unwrap_or("__no-window__");
+        if let Some(checkpoint) = checkpoints
+            .and_then(|store| store.read(window, &key.1).ok())
+            .flatten()
+        {
+            mirror.feed(&checkpoint.paint);
+        }
+    }
+    Arc::new(Mutex::new(mirror))
 }
 
 fn frame_timeout_ms(request: &Value) -> u64 {
@@ -1094,15 +1129,20 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[cfg(unix)]
-    fn socket_test_root() -> PathBuf {
+    fn test_root(prefix: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = Path::new("/tmp").join(format!("sk{:x}{:x}", std::process::id(), nonce));
+        let root =
+            std::env::temp_dir().join(format!("{prefix}{:x}{:x}", std::process::id(), nonce));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[cfg(unix)]
+    fn socket_test_root() -> PathBuf {
+        test_root("sk")
     }
 
     #[cfg(unix)]
@@ -1198,6 +1238,45 @@ mod tests {
         alt: bool,
     }
 
+    struct PaintMirror {
+        paint: Vec<u8>,
+    }
+
+    impl TerminalStateMirror for PaintMirror {
+        fn feed(&mut self, bytes: &[u8]) {
+            self.paint.extend_from_slice(bytes);
+        }
+        fn resize(&mut self, _cols: u16, _rows: u16) {}
+        fn rehydrate(&self) -> Vec<u8> {
+            self.paint.clone()
+        }
+        fn cold_paint(&self) -> Vec<u8> {
+            self.paint.clone()
+        }
+        fn frame_at(&self, offset: usize) -> TerminalFrame {
+            empty_frame(offset, 0, false)
+        }
+        fn history_size(&self) -> usize {
+            0
+        }
+        fn modes(&self) -> TerminalModes {
+            TerminalModes::default()
+        }
+        fn capabilities(&self) -> MirrorCapabilities {
+            MirrorCapabilities::default()
+        }
+        fn alt_active(&self) -> bool {
+            false
+        }
+        fn suppressed_replies(&self) -> u64 {
+            0
+        }
+    }
+
+    fn paint_mirror(_cols: u16, _rows: u16) -> Box<dyn TerminalStateMirror> {
+        Box::new(PaintMirror { paint: vec![] })
+    }
+
     impl TerminalStateMirror for ScriptedMirror {
         fn feed(&mut self, _bytes: &[u8]) {}
         fn resize(&mut self, _cols: u16, _rows: u16) {}
@@ -1258,6 +1337,34 @@ mod tests {
 
     fn scripted(history: usize, alt: bool) -> SharedMirror {
         Arc::new(Mutex::new(Box::new(ScriptedMirror { history, alt })))
+    }
+
+    #[test]
+    fn a_new_session_replays_the_archive_before_live_output() {
+        let home = test_root("checkpoint-archive-");
+        let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [7; 32]).unwrap();
+        store
+            .write(
+                "window",
+                "pane",
+                4,
+                20,
+                b"archived-screen\n",
+                &empty_frame(0, 0, false),
+            )
+            .unwrap();
+        let key = (Some("window".to_string()), "pane".to_string());
+
+        let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, true);
+        restored.lock().unwrap().feed(b"fresh-shell");
+        assert_eq!(
+            restored.lock().unwrap().rehydrate(),
+            b"archived-screen\nfresh-shell"
+        );
+
+        let warm = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, false);
+        assert!(warm.lock().unwrap().rehydrate().is_empty());
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     fn frame_of(registry: &Registry, subscriber: &str, extra: Value) -> Value {
