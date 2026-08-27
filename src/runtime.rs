@@ -655,8 +655,10 @@ fn create_session_mirror(
             .and_then(|store| store.read(window, &key.1).ok())
             .flatten()
         {
+            // The paint carries its own cursor: a live shell's screen stands
+            // back up exactly where it was. Padding rows below it scrolled the
+            // screen away and dropped the prompt to the bottom of a blank pane.
             mirror.feed(&checkpoint.paint);
-            mirror.feed(&b"\r\n".repeat(rows as usize));
         }
     }
     Arc::new(Mutex::new(mirror))
@@ -1563,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_session_replays_the_archive_before_live_output() {
+    fn an_adopted_session_replays_the_archive_at_its_own_cursor() {
         let home = test_root("checkpoint-archive-");
         let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [7; 32]).unwrap();
         store
@@ -1580,8 +1582,8 @@ mod tests {
 
         let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, true);
         restored.lock().unwrap().feed(b"fresh-shell");
+        // The paint carries its own cursor; nothing is padded below it.
         let mut expected = b"archived-screen\n".to_vec();
-        expected.extend_from_slice(&b"\r\n".repeat(24));
         expected.extend_from_slice(b"fresh-shell");
         assert_eq!(
             restored.lock().unwrap().rehydrate(),
