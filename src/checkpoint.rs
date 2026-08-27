@@ -46,6 +46,7 @@ struct CheckpointPayload {
 
 pub struct CheckpointStore {
     directory: PathBuf,
+    lock_directory: PathBuf,
     provider: String,
     cipher: Aes256Gcm,
 }
@@ -54,9 +55,12 @@ impl CheckpointStore {
     pub fn new(home: &Path, provider: &str, key: [u8; 32]) -> io::Result<Self> {
         validate_name(provider)?;
         let directory = home.join("terminal-checkpoints").join(provider);
+        let lock_directory = home.join("terminal-checkpoint-locks").join(provider);
         fs::create_dir_all(&directory)?;
+        fs::create_dir_all(&lock_directory)?;
         Ok(Self {
             directory,
+            lock_directory,
             provider: provider.to_string(),
             cipher: Aes256Gcm::new((&key).into()),
         })
@@ -103,7 +107,7 @@ impl CheckpointStore {
         bytes.extend_from_slice(&sequence.to_be_bytes());
         bytes.extend_from_slice(&nonce);
         bytes.extend_from_slice(&ciphertext);
-        atomic_write(&path, &bytes)
+        self.commit(&path, generation, sequence, &bytes)
     }
 
     pub fn read(&self, window: &str, pane: &str) -> io::Result<Option<ArchivedCheckpoint>> {
@@ -168,6 +172,26 @@ impl CheckpointStore {
         )
         .into_bytes()
     }
+
+    fn commit(&self, path: &Path, generation: u64, sequence: u64, bytes: &[u8]) -> io::Result<()> {
+        let lock_name = path.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint path has no file name",
+            )
+        })?;
+        let lock_path = self.lock_directory.join(lock_name).with_extension("lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        lock.lock()?;
+        if committed_position(path)?.is_some_and(|position| position >= (generation, sequence)) {
+            return Ok(());
+        }
+        atomic_write(path, bytes)
+    }
 }
 
 fn validate_name(value: &str) -> io::Result<()> {
@@ -206,7 +230,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
                 "checkpoint path has no file name",
             )
         })?;
-    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    let digest = Sha256::digest(bytes);
+    let temporary = path.with_file_name(format!(".{file_name}.{digest:x}.tmp"));
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -220,4 +245,18 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+fn committed_position(path: &Path) -> io::Result<Option<(u64, u64)>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() < HEADER_BYTES || &bytes[..8] != MAGIC || bytes[8] != VERSION {
+        return Ok(None);
+    }
+    let generation = u64::from_be_bytes(bytes[9..17].try_into().unwrap());
+    let sequence = u64::from_be_bytes(bytes[17..25].try_into().unwrap());
+    Ok(Some((generation, sequence)))
 }

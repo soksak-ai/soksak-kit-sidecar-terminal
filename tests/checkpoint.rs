@@ -98,8 +98,7 @@ fn key_environment_requires_exact_base64_key_material() {
 
 #[test]
 fn older_checkpoint_cannot_replace_a_newer_commit() {
-    let home =
-        std::env::temp_dir().join(format!("soksak-checkpoint-order-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("soksak-checkpoint-order-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
 
@@ -127,9 +126,8 @@ fn concurrent_checkpoint_commits_do_not_collide_or_regress() {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&home);
-    let store = Arc::new(
-        CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap(),
-    );
+    let store =
+        Arc::new(CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap());
     let barrier = Arc::new(Barrier::new(WRITERS));
     let writers = (0..WRITERS)
         .map(|sequence| {
@@ -138,14 +136,7 @@ fn concurrent_checkpoint_commits_do_not_collide_or_regress() {
             std::thread::spawn(move || {
                 let paint = vec![sequence as u8; 256 * 1024];
                 barrier.wait();
-                store.write(
-                    "window-a",
-                    "pane-a",
-                    9,
-                    sequence as u64,
-                    &paint,
-                    &frame(),
-                )
+                store.write("window-a", "pane-a", 9, sequence as u64, &paint, &frame())
             })
         })
         .collect::<Vec<_>>();

@@ -21,6 +21,9 @@ and until then the owner gate that installs the PTY fails by that refusal.
 
 Live handoff snapshots publish mirror paint and its absolute PTY output sequence atomically. A
 snapshot can therefore be followed by `pty.attachLease` without replaying or dropping bytes.
+Checkpoint commits are serialized per pane across threads and processes. Their
+`(generation, sequence)` position only advances; an older background write cannot replace a newer
+explicit archive. Readers observe only the atomically renamed file, never an in-progress file.
 `terminal.frame` publishes the viewport as runs together with the exact output sequence applied to
 that mirror under the same lock, so callers never infer renderer progress from a request coordinate.
 Each `subscriber` receives a full picture first and changed rows afterwards; a resize, an offset
