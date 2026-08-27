@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::{Arc, Barrier};
 
 use soksak_kit_sidecar_terminal::checkpoint::CheckpointStore;
 use soksak_kit_sidecar_terminal::mirror::{TerminalFrame, TerminalModes};
@@ -115,5 +116,45 @@ fn older_checkpoint_cannot_replace_a_newer_commit() {
     let opened = store.read("window-a", "pane-a").unwrap().unwrap();
     assert_eq!((opened.generation, opened.sequence), (8, 3));
     assert_eq!(opened.paint, b"new-generation");
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn concurrent_checkpoint_commits_do_not_collide_or_regress() {
+    const WRITERS: usize = 16;
+    let home = std::env::temp_dir().join(format!(
+        "soksak-checkpoint-concurrent-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&home);
+    let store = Arc::new(
+        CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap(),
+    );
+    let barrier = Arc::new(Barrier::new(WRITERS));
+    let writers = (0..WRITERS)
+        .map(|sequence| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let paint = vec![sequence as u8; 256 * 1024];
+                barrier.wait();
+                store.write(
+                    "window-a",
+                    "pane-a",
+                    9,
+                    sequence as u64,
+                    &paint,
+                    &frame(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for writer in writers {
+        writer.join().unwrap().unwrap();
+    }
+    let opened = store.read("window-a", "pane-a").unwrap().unwrap();
+    assert_eq!(opened.sequence, (WRITERS - 1) as u64);
+    assert_eq!(opened.paint[0], (WRITERS - 1) as u8);
     let _ = fs::remove_dir_all(home);
 }
