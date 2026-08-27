@@ -231,7 +231,14 @@ impl SurfaceSessions {
         )?;
 
         let canvas = self.canvas()?;
-        let channel = self.channel(sidecar_id, identifier)?;
+        let mut channel = self.channel(sidecar_id, identifier)?;
+        // The application restarting leaves this process holding a send right
+        // to a dead port. One probe send names that state; the channel is then
+        // dropped and looked up again against the new bootstrap check-in.
+        if channel.send(&Message::Hello { sidecar_id: sidecar_id.to_string() }, &[]).is_err() {
+            *self.channel.lock().unwrap() = None;
+            channel = self.channel(sidecar_id, identifier)?;
+        }
         let metrics = canvas
             .font_metrics(family, pt, scale)
             .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
