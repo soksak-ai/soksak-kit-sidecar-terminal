@@ -585,3 +585,10 @@ int32_t soksak_canvas_surface_read(SoksakSurface *surface, uint8_t *bgra, uint64
     IOSurfaceUnlock(surface->surface, kIOSurfaceLockReadOnly, NULL);
     return 0;
 }
+
+uint32_t soksak_canvas_surface_mach_port(SoksakSurface *surface) {
+    if (surface == NULL || surface->surface == NULL) {
+        return 0;
+    }
+    return (uint32_t)IOSurfaceCreateMachPort(surface->surface);
+}

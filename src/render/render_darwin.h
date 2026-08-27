@@ -57,3 +57,7 @@ int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurf
 
 // Copy the surface pixels out, BGRA rows tightly packed (width × 4 bytes each).
 int32_t soksak_canvas_surface_read(SoksakSurface *surface, uint8_t *bgra, uint64_t cap);
+
+// The surface as a mach send right, for the channel to hand the application.
+// Zero on failure.
+uint32_t soksak_canvas_surface_mach_port(SoksakSurface *surface);

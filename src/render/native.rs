@@ -233,6 +233,7 @@ mod darwin_paint {
             bgra: *mut u8,
             cap: u64,
         ) -> c_int;
+        pub(super) fn soksak_canvas_surface_mach_port(surface: *mut RawSurface) -> u32;
     }
 }
 
@@ -269,6 +270,16 @@ unsafe impl Send for Surface {}
 impl Surface {
     pub fn width(&self) -> u32 {
         self.width
+    }
+
+    /// A fresh send right for this surface; the channel ships it once and the
+    /// application looks the surface up from it.
+    pub fn mach_port(&self) -> Result<u32, String> {
+        let port = unsafe { darwin_paint::soksak_canvas_surface_mach_port(self.raw) };
+        if port == 0 {
+            return Err("SURFACE_PORT_UNAVAILABLE: the surface minted no send right".to_string());
+        }
+        Ok(port)
     }
 
     pub fn height(&self) -> u32 {
