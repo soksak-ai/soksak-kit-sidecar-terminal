@@ -339,8 +339,8 @@ dependencies = [
 
 [[package]]
 name = "soksak-contract-surface"
-version = "0.0.1"
-source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=e7a697ca8f10af00c846b88aaa078e7a2023eb9c#e7a697ca8f10af00c846b88aaa078e7a2023eb9c"
+version = "0.0.2"
+source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=b095b92660ff617c345f9a7eb2b8ab4ce9986cd5#b095b92660ff617c345f9a7eb2b8ab4ce9986cd5"
 
 [[package]]
 name = "soksak-kit-sidecar-terminal"
