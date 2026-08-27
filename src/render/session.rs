@@ -41,6 +41,7 @@ struct PaneControl {
     overlay: Mutex<OverlayState>,
     returns: Mutex<Vec<u8>>,
     signal: FrameSignal,
+    pending: Mutex<Option<(Painter, SurfaceRing, f64)>>,
     paints: AtomicU64,
     sends: AtomicU64,
     acquire_misses: AtomicU64,
@@ -58,6 +59,7 @@ struct OverlayState {
 struct FontChoice {
     family: String,
     pt: f64,
+    palette: Palette,
 }
 
 pub struct SurfaceSessions {
@@ -253,7 +255,7 @@ impl SurfaceSessions {
             scale,
             cols,
             rows,
-            palette,
+            palette.clone(),
         )
         .map_err(|error| refuse("PAINTER_UNAVAILABLE", error))?;
         let ring = SurfaceRing::new(&canvas, cols as u32 * cell_w, rows as u32 * cell_h, rows)
@@ -281,6 +283,7 @@ impl SurfaceSessions {
             overlay: Mutex::new(OverlayState::default()),
             returns: Mutex::new(Vec::new()),
             signal,
+            pending: Mutex::new(None),
             paints: AtomicU64::new(0),
             sends: AtomicU64::new(0),
             acquire_misses: AtomicU64::new(0),
@@ -296,7 +299,7 @@ impl SurfaceSessions {
         self.fonts
             .lock()
             .unwrap()
-            .insert(pane.clone(), FontChoice { family: family.to_string(), pt });
+            .insert(pane.clone(), FontChoice { family: family.to_string(), pt, palette: palette.clone() });
         spawn_render_thread(control, mirror, painter, ring, channel);
         Ok(json!({ "cols": cols, "rows": rows, "cellW": metrics.cell_w, "cellH": metrics.cell_h }))
     }
@@ -315,8 +318,12 @@ impl SurfaceSessions {
         let metrics = canvas
             .font_metrics(&font.family, font.pt, scale)
             .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
-        let (cols, rows) = grid_for(pixel_w, pixel_h, scale, metrics.cell_w, metrics.cell_h);
-        control.overlay.lock().unwrap().resize = Some((pixel_w as u32, pixel_h as u32, scale));
+        let (painter, ring, (cols, rows)) = prepare_render(
+            &canvas, &font.family, font.pt, scale, pixel_w, pixel_h, font.palette.clone(),
+        )
+        .map_err(|error| refuse("RESIZE_UNAVAILABLE", error))?;
+        drop(fonts);
+        *control.pending.lock().unwrap() = Some((painter, ring, scale));
         control.dirty.store(true, Ordering::Release);
         control.wake();
         Ok(json!({ "cols": cols, "rows": rows }))
@@ -499,6 +506,26 @@ fn parse_theme(theme: &Value) -> Result<Palette, SurfaceError> {
     Ok(Palette { fg, bg, ansi })
 }
 
+/// One painter and one ring for one pixel box: the same construction whether
+/// the pane opens or resizes. The caller sends the ring and repaints all.
+pub fn prepare_render(
+    canvas: &Arc<Canvas>,
+    family: &str,
+    pt: f64,
+    scale: f64,
+    pixel_w: f64,
+    pixel_h: f64,
+    palette: Palette,
+) -> Result<(Painter, SurfaceRing, (u16, u16)), String> {
+    let metrics = canvas.font_metrics(family, pt, scale)?;
+    let (cols, rows) = grid_for(pixel_w, pixel_h, scale, metrics.cell_w, metrics.cell_h);
+    let cell_w = metrics.cell_w.ceil() as u32;
+    let cell_h = metrics.cell_h.ceil() as u32;
+    let painter = Painter::new(Arc::clone(canvas), family, pt, scale, cols, rows, palette)?;
+    let ring = SurfaceRing::new(canvas, cols as u32 * cell_w, rows as u32 * cell_h, rows)?;
+    Ok((painter, ring, (cols, rows)))
+}
+
 fn spawn_render_thread(
     control: Arc<PaneControl>,
     mirror: SharedMirror,
@@ -519,6 +546,38 @@ fn spawn_render_thread(
                     &[],
                 );
                 return;
+            }
+            // A pending resize replaces the paint surfaces wholesale: the new
+            // ring goes to the application first, then everything repaints.
+            if let Some((new_painter, new_ring, new_scale)) = control.pending.lock().unwrap().take() {
+                painter = new_painter;
+                ring = new_ring;
+                last_signaled = None;
+                let (cell_w_px, cell_h_px) = painter.cell_size();
+                let (pixel_w, pixel_h) = painter.pixel_size();
+                match ring.mach_ports() {
+                    Ok(ports) => {
+                        if let Err(error) = channel.send(
+                            &Message::Ring {
+                                pane: control.pane.clone(),
+                                pixel_w,
+                                pixel_h,
+                                scale: new_scale,
+                                cell_w: cell_w_px as f64,
+                                cell_h: cell_h_px as f64,
+                            },
+                            &ports,
+                        ) {
+                            *control.last_error.lock().unwrap() =
+                                Some(format!("resize ring send: {error}"));
+                        }
+                    }
+                    Err(error) => {
+                        *control.last_error.lock().unwrap() =
+                            Some(format!("resize ring ports: {error}"));
+                    }
+                }
+                control.dirty.store(true, Ordering::Release);
             }
             // Route returned surfaces first: a release both frees a slot and
             // tells us the previously signaled one is on screen now.

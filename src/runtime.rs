@@ -298,18 +298,42 @@ impl Runtime {
         rows: u16,
     ) -> io::Result<()> {
         let key = (info.window_label.clone(), info.pane_id.clone());
-        let mirror = create_session_mirror(
+        let fresh = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
             &key,
             cols,
             rows,
-            true,
+            restores_archive(observation.start_output_sequence()),
         );
-        self.registry.lock().unwrap().insert(
-            key.clone(),
-            new_session_state(info, &observation, mirror.clone(), cols, rows),
-        );
+        // A key already held keeps its shared mirror arc — the render thread
+        // holds it — and the fresh content replaces what is inside it.
+        let (mirror, previous) = {
+            let registry = self.registry.lock().unwrap();
+            match registry.get(&key) {
+                Some(old) => {
+                    let held = old.mirror.clone();
+                    let replacement = std::mem::replace(
+                        &mut *fresh.lock().unwrap(),
+                        (self.factory)(1, 1),
+                    );
+                    *held.lock().unwrap() = replacement;
+                    (held, true)
+                }
+                None => (fresh, false),
+            }
+        };
+        let mut state = new_session_state(info, &observation, mirror.clone(), cols, rows);
+        if previous {
+            let registry = self.registry.lock().unwrap();
+            if let Some(old) = registry.get(&key) {
+                state = continue_state(old, state);
+            }
+        }
+        let signal = state.frame_signal.clone();
+        self.registry.lock().unwrap().insert(key.clone(), state);
+        // The waiting render thread learns the world changed.
+        signal.1.notify_all();
         self.start_consumer(observation, mirror, key);
         Ok(())
     }
@@ -594,6 +618,26 @@ impl Runtime {
             });
         }
     }
+}
+
+/// A session that already produced output is one a live shell still owns —
+/// its archived screen is the truth to stand back up. A session at zero is a
+/// brand-new shell: replaying a dead shell's screen under it detaches the
+/// visible cursor from the real one.
+/// A session replacing another under the same key keeps the other's shared
+/// handles: a render thread wired to the old signal and mirror must see the
+/// new session's frames, not sleep on arcs nobody feeds again.
+fn continue_state(old: &SessionState, mut new: SessionState) -> SessionState {
+    new.frame_signal = old.frame_signal.clone();
+    new.size_signal = old.size_signal.clone();
+    new.frame_subscribers = old.frame_subscribers.clone();
+    new.frames_consumed = old.frames_consumed.clone();
+    new.consumer_note = old.consumer_note.clone();
+    new
+}
+
+fn restores_archive(start_output_sequence: u64) -> bool {
+    start_output_sequence > 0
 }
 
 fn create_session_mirror(
@@ -1225,6 +1269,46 @@ impl ServiceClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_replacing_session_keeps_the_arcs_a_render_thread_waits_on() {
+        let mirror_a: SharedMirror = Arc::new(Mutex::new(Box::new(PaintMirror { paint: Vec::new() })));
+        let progress = Arc::new(AtomicU64::new(0));
+        let (key, registry) = test_registry(&mirror_a, progress, (4, 2));
+        let registry = registry.lock().unwrap();
+        let old = registry.get(&key).unwrap();
+        let mirror_b: SharedMirror = Arc::new(Mutex::new(Box::new(PaintMirror { paint: Vec::new() })));
+        let fresh = SessionState {
+            session: 2,
+            generation: 2,
+            window: key.0.clone(),
+            pane: key.1.clone(),
+            mirror: mirror_b,
+            mirror_output_sequence: Arc::new(AtomicU64::new(0)),
+            source_event_sequence: 0,
+            source_output_sequence: 0,
+            gaps: 0,
+            alt_active: false,
+            suppressed_replies: 0,
+            frame_signal: Arc::new((Mutex::new(0), Condvar::new())),
+            size_signal: Arc::new((Mutex::new((4, 2)), Condvar::new())),
+            frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
+            frames_consumed: Arc::new(AtomicU64::new(0)),
+            consumer_note: Arc::new(Mutex::new(String::from("starting"))),
+        };
+        let continued = continue_state(old, fresh);
+        assert!(Arc::ptr_eq(&continued.frame_signal, &old.frame_signal));
+        assert!(Arc::ptr_eq(&continued.size_signal, &old.size_signal));
+        assert!(Arc::ptr_eq(&continued.frames_consumed, &old.frames_consumed));
+        assert_eq!(continued.session, 2);
+    }
+
+    #[test]
+    fn a_brand_new_session_never_replays_a_dead_shells_screen() {
+        assert!(!super::restores_archive(0));
+        assert!(super::restores_archive(1));
+        assert!(super::restores_archive(900_000));
+    }
+
     use super::*;
     use crate::mirror::{FrameLine, FrameRun, TerminalFrame, TerminalModes};
     use std::sync::mpsc;
