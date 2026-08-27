@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "soksak-kit-sidecar-terminal"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "aes-gcm",
  "base64",
