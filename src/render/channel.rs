@@ -7,7 +7,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
 
-use soksak_contract_surface::{channel_name, decode, encode, Message};
+use soksak_contract_surface::{channel_name, decode, encode, wire_length, Message};
 
 #[repr(C)]
 struct RawChannel {
@@ -133,7 +133,10 @@ impl SurfaceChannel {
             soksak_channel_recv(self.raw, buffer.as_mut_ptr(), RECV_CAP as u64, &mut len, timeout_ms)
         };
         match code {
-            0 => decode(&buffer[..len as usize]).map(Some),
+            0 => {
+                let exact = wire_length(&buffer[..len as usize])?;
+                decode(&buffer[..exact]).map(Some)
+            }
             1 => Ok(None),
             _ => Err(format!("CHANNEL_RECV_{code}: the reply port did not answer")),
         }
@@ -181,7 +184,8 @@ impl ChannelHost {
         };
         match code {
             0 => {
-                let message = decode(&buffer[..len as usize])?;
+                let exact = wire_length(&buffer[..len as usize])?;
+                let message = decode(&buffer[..exact])?;
                 Ok(Some((message, ports[..port_count as usize].to_vec())))
             }
             1 => Ok(None),

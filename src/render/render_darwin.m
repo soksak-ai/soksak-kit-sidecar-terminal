@@ -627,9 +627,8 @@ static int32_t soksakMachSend(mach_port_t to, const uint8_t *bytes, uint64_t len
             cursor += sizeof(mach_msg_port_descriptor_t);
         }
     }
-    uint32_t payloadLen = (uint32_t)len;
-    memcpy(cursor, &payloadLen, 4);
-    cursor += 4;
+    // The packet's payload is exactly the wire message (SPEC: the mach
+    // packet); the receiver trims mach padding with the wire's own length.
     memcpy(cursor, bytes, len);
     cursor += len;
     mach_msg_size_t size = (mach_msg_size_t)round_msg((uintptr_t)cursor - (uintptr_t)buffer);
@@ -683,14 +682,16 @@ static int32_t soksakMachRecv(mach_port_t on, uint8_t *out, uint64_t cap, uint64
             cursor += sizeof(mach_msg_port_descriptor_t);
         }
     }
-    uint32_t payloadLen = 0;
-    memcpy(&payloadLen, cursor, 4);
-    cursor += 4;
-    if (payloadLen > cap || payloadLen > kSoksakChannelMaxPayload) {
+    size_t consumed = (size_t)(cursor - buffer);
+    if (header->msgh_size < consumed) {
         return -4;
     }
-    memcpy(out, cursor, payloadLen);
-    *outLen = payloadLen;
+    size_t length = header->msgh_size - consumed;
+    if (length > cap || length > kSoksakChannelMaxPayload) {
+        return -4;
+    }
+    memcpy(out, cursor, length);
+    *outLen = length;
     if (portCountOut != NULL) {
         *portCountOut = ports;
     }
