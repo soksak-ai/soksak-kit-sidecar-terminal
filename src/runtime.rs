@@ -343,9 +343,9 @@ impl Runtime {
         let checkpoint = self.checkpoints.as_ref().map(|store| {
             start_checkpoint_worker(store.clone(), self.sidecar_id, key.clone(), mirror.clone())
         });
-        // The entry can vanish between the insert and this fetch (an old
-        // consumer of the same key exits and removes it). Detached counters
-        // keep the consumer observable; a panic here poisons the registry.
+        // The entry can vanish between the insert and this fetch (a close or
+        // retire under the same key). Detached counters keep the consumer
+        // observable; a panic here poisons the registry.
         let (frames, note) = {
             let sessions = self.registry.lock().unwrap();
             match sessions.get(&key) {
@@ -757,11 +757,14 @@ fn frame_request(registry: &Registry, request: &Value) -> Value {
     }
 }
 
-fn remove_session_if_owner(registry: &Registry, key: &PaneKey, mirror: &SharedMirror) -> bool {
+/// A dying consumer evicts only its own session. A replacement under the same
+/// key keeps the shared mirror arc, so the arc identifies nothing — the
+/// session number is the owner.
+fn remove_session_if_owner(registry: &Registry, key: &PaneKey, session: u64) -> bool {
     let mut sessions = registry.lock().unwrap();
     let owned = sessions
         .get(key)
-        .is_some_and(|state| Arc::ptr_eq(&state.mirror, mirror));
+        .is_some_and(|state| state.session == session);
     if owned {
         sessions.remove(key);
     }
@@ -777,13 +780,14 @@ fn consume_observations(
     frames: Arc<AtomicU64>,
     note: Arc<Mutex<String>>,
 ) {
+    let session = observations.session();
     *note.lock().unwrap() = String::from("running");
     let exit = loop {
         match observations.next_frame() {
             Ok(Some(frame)) => {
                 frames.fetch_add(1, Ordering::AcqRel);
-                if !apply_observation(frame, &mirror, &registry, &key, checkpoint.as_ref()) {
-                    break String::from("apply refused: the registry no longer holds this pane");
+                if !apply_observation(frame, &mirror, &registry, &key, session, checkpoint.as_ref()) {
+                    break String::from("apply refused: the registry no longer holds this session");
                 }
             }
             Ok(None) => break String::from("stream ended: the pty closed the observation connection"),
@@ -791,7 +795,7 @@ fn consume_observations(
         }
     };
     *note.lock().unwrap() = exit;
-    remove_session_if_owner(&registry, &key, &mirror);
+    remove_session_if_owner(&registry, &key, session);
 }
 
 fn apply_observation(
@@ -799,6 +803,7 @@ fn apply_observation(
     mirror: &SharedMirror,
     registry: &Registry,
     key: &PaneKey,
+    session: u64,
     checkpoint: Option<&Sender<CheckpointEvent>>,
 ) -> bool {
     match frame {
@@ -813,6 +818,9 @@ fn apply_observation(
                 let Some(state) = states.get(key) else {
                     return false;
                 };
+                if state.session != session {
+                    return false;
+                }
                 state.mirror_output_sequence.clone()
             };
             let (alt_active, suppressed_replies) = {
@@ -825,6 +833,9 @@ fn apply_observation(
             let Some(state) = states.get_mut(key) else {
                 return false;
             };
+            if state.session != session {
+                return false;
+            }
             state.source_event_sequence = event_sequence;
             state.source_output_sequence = through_sequence;
             state.alt_active = alt_active;
@@ -845,13 +856,19 @@ fn apply_observation(
             cols,
             rows,
         } => {
-            mirror.lock().unwrap().resize(cols, rows);
-            let mut states = registry.lock().unwrap();
-            let Some(state) = states.get_mut(key) else {
-                return false;
+            let size_signal = {
+                let mut states = registry.lock().unwrap();
+                let Some(state) = states.get_mut(key) else {
+                    return false;
+                };
+                if state.session != session {
+                    return false;
+                }
+                state.source_event_sequence = event_sequence;
+                state.size_signal.clone()
             };
-            state.source_event_sequence = event_sequence;
-            let (size, ready) = &*state.size_signal;
+            mirror.lock().unwrap().resize(cols, rows);
+            let (size, ready) = &*size_signal;
             *size.lock().unwrap() = (cols, rows);
             ready.notify_all();
             true
@@ -865,6 +882,9 @@ fn apply_observation(
             let Some(state) = states.get_mut(key) else {
                 return false;
             };
+            if state.session != session {
+                return false;
+            }
             state.gaps += 1;
             state.source_event_sequence = through_event_sequence;
             state.source_output_sequence = through_sequence;
@@ -878,6 +898,9 @@ fn apply_observation(
             let Some(state) = states.get(key) else {
                 return false;
             };
+            if state.session != session {
+                return false;
+            }
             if let Some(checkpoint) = checkpoint {
                 let _ = checkpoint.send(CheckpointEvent::Final {
                     generation: state.generation,
@@ -888,7 +911,9 @@ fn apply_observation(
         }
         ObservationFrame::Opened { .. } => {
             if let Some(state) = registry.lock().unwrap().get_mut(key) {
-                state.gaps += 1;
+                if state.session == session {
+                    state.gaps += 1;
+                }
             }
             false
         }
@@ -1605,19 +1630,38 @@ mod tests {
     }
 
     #[test]
-    fn ended_consumer_cannot_remove_a_replacement_mirror() {
-        let old = scripted(0, false);
-        let replacement = scripted(0, false);
-        let (key, registry) = test_registry(&old, Arc::new(AtomicU64::new(0)), (1, 1));
-        registry.lock().unwrap().get_mut(&key).unwrap().mirror = replacement.clone();
+    fn a_dying_consumer_evicts_only_its_own_session() {
+        let mirror = scripted(0, false);
+        let (key, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (1, 1));
+        registry.lock().unwrap().get_mut(&key).unwrap().session = 2;
 
-        assert!(!remove_session_if_owner(&registry, &key, &old));
-        assert!(Arc::ptr_eq(
-            &registry.lock().unwrap().get(&key).unwrap().mirror,
-            &replacement,
-        ));
-        assert!(remove_session_if_owner(&registry, &key, &replacement));
+        assert!(!remove_session_if_owner(&registry, &key, 1));
+        assert!(registry.lock().unwrap().contains_key(&key));
+        assert!(remove_session_if_owner(&registry, &key, 2));
         assert!(!registry.lock().unwrap().contains_key(&key));
+    }
+
+    #[test]
+    fn an_old_consumers_output_never_reaches_a_replacing_session() {
+        let mirror = scripted(0, false);
+        let progress = Arc::new(AtomicU64::new(0));
+        let (key, registry) = test_registry(&mirror, progress.clone(), (1, 1));
+        registry.lock().unwrap().get_mut(&key).unwrap().session = 2;
+
+        assert!(!apply_observation(
+            ObservationFrame::Output {
+                event_sequence: 1,
+                from_sequence: 0,
+                through_sequence: 9,
+                bytes: vec![b'x'],
+            },
+            &mirror,
+            &registry,
+            &key,
+            1,
+            None,
+        ));
+        assert_eq!(progress.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -1691,6 +1735,7 @@ mod tests {
                     &mirror,
                     &registry,
                     &key,
+                    1,
                     None,
                 )
             })
@@ -1745,6 +1790,7 @@ mod tests {
                     &mirror,
                     &registry,
                     &key,
+                    1,
                     None,
                 )
             })
@@ -1800,6 +1846,7 @@ mod tests {
             &mirror,
             &registry,
             &key,
+            1,
             None,
         ));
         let status = status_snapshot(&registry, MirrorCapabilities::default());
