@@ -58,6 +58,22 @@ impl Drop for Process {
     }
 }
 
+pub fn assert_process_label_contract() {
+    assert_eq!(
+        proto::hello("greeting", "token")["args"]["protocol"],
+        soksak_contract_control::PROTOCOL
+    );
+    let announcement = soksak_contract_control::announcement(
+        "/runtime/terminal.sock",
+        "soksakv3",
+        Some("token"),
+    )
+    .expect("the shared label is valid");
+    let wire = serde_json::to_value(announcement).expect("announcement serializes");
+    assert_eq!(wire["processLabel"], "soksakv3");
+    assert!(soksak_contract_control::parse_process_label("slash/name").is_none());
+}
+
 pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, sidecar_id: &'static str) {
     let home = fresh_home();
     let runtime_root = fresh_runtime();
