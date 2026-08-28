@@ -41,7 +41,7 @@ fn repository_owns_public_metadata() {
             .lines()
             .any(|line| line == format!("version = \"{version}\""))
     );
-    assert!(manifest.contains("rev = \"6d1a1c8cbad7fa131bb4aef94a730fa6d18dbaff\""));
+    assert!(manifest.contains("rev = \"9c04b11819a7bee521368ad446ac196a5370d071\""));
     let release_files = fs::read_to_string("release-files.json").expect("read release files");
     assert!(release_files.contains("\"kit.json\""));
     assert!(release_files.contains("\"README.ko.md\""));

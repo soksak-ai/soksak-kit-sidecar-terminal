@@ -7,6 +7,10 @@
 gap 수를 반환합니다. 호출자는 이 값으로 처음 진행하지 않은 경계를 확인합니다.
 느린 mirror나 누락된 관측은 정상으로 처리하지 않고 gap 또는 실패로 보고합니다.
 
+모든 service는 process 경계에서 control contract의 `SOKSAK_PROCESS_LABEL`을 한 번 검증하고 protocol 2
+announcement와 greeting에 게시합니다. 이 label은 공개 process inventory와 monitoring 전용이며 component
+identity, socket, dependency, ownership 또는 executable에서 도출되는 운영체제 process 이름을 바꾸지 않습니다.
+
 Terminal sidecar owner gate는 `scripts/install_pty_release.py`로
 `soksak-sidecar-pty@0.0.6`의 target별 immutable release를 설치합니다. Installer는 owner release
 identity, source commit, artifact size와 SHA-256을 검사하고 regular file만 압축 해제합니다.

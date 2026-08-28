@@ -71,7 +71,9 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, sidecar_id:
         "/bin/sh",
     ]);
     let mut pty = Process::start("PTY", pty_command);
-    assert_eq!(pty.announcement()["protocol"], proto::CONTROL_PROTOCOL);
+    let pty_announcement = pty.announcement();
+    assert_eq!(pty_announcement["protocol"], soksak_contract_control::PROTOCOL);
+    assert_eq!(pty_announcement["processLabel"], "soksak");
 
     let mut service_command = Command::new(service_binary);
     service_command.args([
@@ -83,7 +85,8 @@ pub fn assert_warm_restore(pty_binary: &Path, service_binary: &Path, sidecar_id:
     service_command.env(crate::checkpoint::KEY_ENV, B64.encode([0x51u8; 32]));
     let mut service = Process::start("terminal-state service", service_command);
     let announcement = service.announcement();
-    assert_eq!(announcement["protocol"], proto::CONTROL_PROTOCOL);
+    assert_eq!(announcement["protocol"], soksak_contract_control::PROTOCOL);
+    assert_eq!(announcement["processLabel"], "soksak");
     let token = announcement["token"].as_str().unwrap();
     let mut client = ServiceClient::connect(&runtime_root, sidecar_id, token).unwrap();
     let window = "win-integration";

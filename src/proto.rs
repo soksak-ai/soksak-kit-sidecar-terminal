@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-pub const CONTROL_PROTOCOL: u32 = 1;
 pub const PTY_PROTOCOL_VERSION: u32 = 1;
 pub const PTY_SIDECAR_NAME: &str = "soksak-sidecar-pty";
 
@@ -38,7 +37,7 @@ pub fn hello(id: &str, token: &str) -> Value {
     json!({
         "id": id,
         "command": "system.hello",
-        "args": { "protocol": CONTROL_PROTOCOL, "token": token },
+        "args": { "protocol": soksak_contract_control::PROTOCOL, "token": token },
     })
 }
 

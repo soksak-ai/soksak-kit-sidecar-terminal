@@ -124,6 +124,7 @@ fn status_snapshot(registry: &Registry, capabilities: MirrorCapabilities) -> Val
 pub struct Runtime {
     runtime_root: PathBuf,
     sidecar_id: &'static str,
+    process_label: String,
     factory: MirrorFactory,
     capabilities: MirrorCapabilities,
     registry: Registry,
@@ -139,6 +140,7 @@ impl Runtime {
         home: PathBuf,
         runtime_root: PathBuf,
         sidecar_id: &'static str,
+        process_label: String,
         factory: MirrorFactory,
     ) -> io::Result<Self> {
         install_panic_log(&home, sidecar_id);
@@ -155,6 +157,7 @@ impl Runtime {
         Ok(Self {
             runtime_root,
             sidecar_id,
+            process_label,
             factory,
             capabilities,
             registry: Arc::new(Mutex::new(HashMap::new())),
@@ -1062,15 +1065,18 @@ fn serve_connection(connection: Stream, runtime: &Runtime, token: &str) -> io::R
         let response = if command == "system.hello" {
             let protocol = request.pointer("/args/protocol").and_then(Value::as_u64);
             let received_token = request.pointer("/args/token").and_then(Value::as_str);
-            if protocol != Some(proto::CONTROL_PROTOCOL as u64) || received_token != Some(token) {
+            if protocol != Some(soksak_contract_control::PROTOCOL as u64)
+                || received_token != Some(token)
+            {
                 envelope_error(&id, "GREETING", "invalid protocol or token")
             } else {
                 greeted = true;
-                envelope_ok(
+                envelope_greeting(
                     &id,
                     json!({
-                        "protocol": proto::CONTROL_PROTOCOL,
+                        "protocol": soksak_contract_control::PROTOCOL,
                         "identity": runtime.sidecar_id,
+                        "processLabel": runtime.process_label,
                         "commands": { "commands": [
                             { "name": "terminal.prepareSession", "owner": "plugin" },
                             { "name": "terminal.ensureSession", "owner": "plugin" },
@@ -1114,6 +1120,10 @@ fn result_error(code: &str, message: &str) -> Value {
 
 fn envelope_ok(id: &str, data: Value) -> Value {
     json!({ "id": id, "ok": true, "result": { "code": "OK", "data": data } })
+}
+
+fn envelope_greeting(id: &str, greeting: Value) -> Value {
+    json!({ "id": id, "ok": true, "result": greeting })
 }
 
 fn envelope_error(id: &str, code: &str, message: &str) -> Value {
@@ -1180,20 +1190,34 @@ pub fn run_service(
     arguments: impl IntoIterator<Item = String>,
 ) -> io::Result<()> {
     let (home, runtime_root) = parse_roots(arguments)?;
-    let runtime = Runtime::connect(home, runtime_root.clone(), sidecar_id, factory)?;
+    let process_label = process_label_from_environment()?;
+    let runtime = Runtime::connect(
+        home,
+        runtime_root.clone(),
+        sidecar_id,
+        process_label.clone(),
+        factory,
+    )?;
     let listener = bind_service(&runtime_root, sidecar_id)?;
     let token = load_or_create_token(&runtime_root, sidecar_id)?;
-    println!(
-        "{}",
-        json!({
-            "protocol": proto::CONTROL_PROTOCOL,
-            "socket": proto::service_socket_path(&runtime_root, sidecar_id),
-            "token": token,
-        })
-    );
+    let announcement = soksak_contract_control::announcement(
+        &proto::service_socket_path(&runtime_root, sidecar_id),
+        &process_label,
+        Some(&token),
+    )
+    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))?;
+    println!("{}", serde_json::to_string(&announcement)?);
     std::io::stdout().flush()?;
     runtime.serve(listener, token);
     Ok(())
+}
+
+fn process_label_from_environment() -> io::Result<String> {
+    let value = std::env::var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT)
+        .unwrap_or_else(|_| soksak_contract_control::DEFAULT_PROCESS_LABEL.to_string());
+    soksak_contract_control::parse_process_label(&value)
+        .map(str::to_owned)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))
 }
 
 fn parse_roots(arguments: impl IntoIterator<Item = String>) -> io::Result<(PathBuf, PathBuf)> {
@@ -1745,8 +1769,8 @@ mod tests {
         let body = run_service.split("fn parse_roots").next().unwrap();
         assert!(!body.contains("subscribe_existing"));
         assert!(
-            body.contains("processLabel"),
-            "service announcement does not publish the accepted process label"
+            body.contains("soksak_contract_control::announcement"),
+            "service announcement bypasses the control contract's process label"
         );
         assert!(
             body.contains("PROCESS_LABEL_ENVIRONMENT"),

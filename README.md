@@ -7,6 +7,11 @@ status. A terminal-state sidecar supplies a `TerminalStateMirror` implementation
 sidecar name.
 The kit defines no terminal semantics and selects no engine.
 
+Every service accepts the control contract's `SOKSAK_PROCESS_LABEL` at its process boundary,
+validates it once, and publishes it in the protocol-2 announcement and greeting. The label is for
+public process inventory and monitoring only; it does not change component identity, sockets,
+dependencies, ownership, or the operating system's executable-derived process name.
+
 Terminal-sidecar owner gates install `soksak-sidecar-pty@0.0.6` through
 `scripts/install_pty_release.py`. The installer accepts an explicit release target, verifies the
 owner release identity, source commit, artifact size and SHA-256, and extracts regular files only.
