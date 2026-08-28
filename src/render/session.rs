@@ -4,7 +4,7 @@
 //! application, rendering belongs here (P3).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ use super::instances::{pack_bgra, Palette};
 use super::native::Canvas;
 use super::painter::{Painter, Preedit};
 use super::surface_ring::SurfaceRing;
-use crate::mirror::{TerminalCursorAnimation, TerminalCursorStyle};
+use crate::mirror::{TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle};
 use crate::TerminalStateMirror;
 
 pub type SharedMirror = Arc<Mutex<Box<dyn TerminalStateMirror>>>;
@@ -47,6 +47,13 @@ struct PaneControl {
     sends: AtomicU64,
     acquire_misses: AtomicU64,
     last_error: Mutex<Option<String>>,
+    cursor_row: AtomicU16,
+    cursor_col: AtomicU16,
+    cursor_visible: AtomicBool,
+    cursor_shape: AtomicU8,
+    cursor_blinking: AtomicBool,
+    cursor_interval_ms: AtomicU64,
+    cursor_phase: AtomicU8,
 }
 
 #[derive(Default)]
@@ -93,6 +100,10 @@ impl CursorAnimation {
 
     fn cursor_on(&self) -> bool {
         !self.active || self.on
+    }
+
+    fn phase(&self) -> u8 {
+        if !self.active { 0 } else if self.on { 1 } else { 2 }
     }
 
     fn tick(&mut self) -> bool {
@@ -245,6 +256,16 @@ impl SurfaceSessions {
         let pane = self.pane_of(request)?;
         let control = self.control_of(&pane)?;
         let signal_seq = *control.signal.0.lock().unwrap();
+        let cursor_shape = match control.cursor_shape.load(Ordering::Acquire) {
+            1 => "underline",
+            2 => "bar",
+            _ => "block",
+        };
+        let cursor_phase = match control.cursor_phase.load(Ordering::Acquire) {
+            1 => "on",
+            2 => "off",
+            _ => "steady",
+        };
         Ok(json!({
             "pane": pane,
             "paints": control.paints.load(Ordering::Acquire),
@@ -254,6 +275,15 @@ impl SurfaceSessions {
             "signalSequence": signal_seq,
             "paused": control.paused.load(Ordering::Acquire),
             "stopped": control.stop.load(Ordering::Acquire),
+            "cursorRow": control.cursor_row.load(Ordering::Acquire),
+            "cursorColumn": control.cursor_col.load(Ordering::Acquire),
+            "cursorVisible": control.cursor_visible.load(Ordering::Acquire),
+            "cursorShape": cursor_shape,
+            "cursorBlinking": control.cursor_blinking.load(Ordering::Acquire),
+            "cursorAnimation": {
+                "intervalMs": control.cursor_interval_ms.load(Ordering::Acquire),
+                "phase": cursor_phase,
+            },
         }))
     }
 
@@ -332,6 +362,13 @@ impl SurfaceSessions {
             sends: AtomicU64::new(0),
             acquire_misses: AtomicU64::new(0),
             last_error: Mutex::new(None),
+            cursor_row: AtomicU16::new(0),
+            cursor_col: AtomicU16::new(0),
+            cursor_visible: AtomicBool::new(false),
+            cursor_shape: AtomicU8::new(0),
+            cursor_blinking: AtomicBool::new(false),
+            cursor_interval_ms: AtomicU64::new(0),
+            cursor_phase: AtomicU8::new(0),
         });
         supersede(&self.panes, &pane, Arc::clone(&control));
         self.fonts
@@ -652,6 +689,17 @@ fn spawn_render_thread(
                         visible && offset == 0 && preedit_value.is_none(),
                         output_activity,
                     );
+                    control.cursor_row.store(cursor.0 as u16, Ordering::Release);
+                    control.cursor_col.store(cursor.1 as u16, Ordering::Release);
+                    control.cursor_visible.store(visible, Ordering::Release);
+                    control.cursor_shape.store(match style.shape {
+                        TerminalCursorShape::Block => 0,
+                        TerminalCursorShape::Underline => 1,
+                        TerminalCursorShape::Bar => 2,
+                    }, Ordering::Release);
+                    control.cursor_blinking.store(style.blinking, Ordering::Release);
+                    control.cursor_interval_ms.store(policy.interval_ms as u64, Ordering::Release);
+                    control.cursor_phase.store(cursor_animation.phase(), Ordering::Release);
                     let refresh = painter.refresh(
                         &**mirror,
                         offset,
@@ -786,6 +834,13 @@ mod tests {
             sends: AtomicU64::new(0),
             acquire_misses: AtomicU64::new(0),
             last_error: Mutex::new(None),
+            cursor_row: AtomicU16::new(0),
+            cursor_col: AtomicU16::new(0),
+            cursor_visible: AtomicBool::new(false),
+            cursor_shape: AtomicU8::new(0),
+            cursor_blinking: AtomicBool::new(false),
+            cursor_interval_ms: AtomicU64::new(0),
+            cursor_phase: AtomicU8::new(0),
         })
     }
 
@@ -807,14 +862,22 @@ mod tests {
     #[test]
     fn surface_state_exposes_the_engine_cursor_and_renderer_animation() {
         let sessions = SurfaceSessions::new();
-        sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
+        let cursor = control("tab-a.1");
+        cursor.cursor_row.store(3, Ordering::Release);
+        cursor.cursor_col.store(7, Ordering::Release);
+        cursor.cursor_visible.store(true, Ordering::Release);
+        cursor.cursor_shape.store(2, Ordering::Release);
+        cursor.cursor_blinking.store(true, Ordering::Release);
+        cursor.cursor_interval_ms.store(750, Ordering::Release);
+        cursor.cursor_phase.store(1, Ordering::Release);
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), cursor);
         let state = sessions.state(&json!({ "pane": "tab-a.1" })).expect("surface state");
-        assert!(state["cursorShape"].is_string(), "cursor shape is not public: {state}");
-        assert!(state["cursorBlinking"].is_boolean(), "cursor blink is not public: {state}");
-        assert!(state["cursorVisible"].is_boolean(), "cursor visibility is not public: {state}");
-        assert!(state["cursorRow"].is_u64() && state["cursorColumn"].is_u64(), "cursor position is not public: {state}");
-        assert!(state["cursorAnimation"]["intervalMs"].is_u64(), "cursor animation interval is not public: {state}");
-        assert!(state["cursorAnimation"]["phase"].is_string(), "cursor animation phase is not public: {state}");
+        assert_eq!(state["cursorShape"], "bar");
+        assert_eq!(state["cursorBlinking"], true);
+        assert_eq!(state["cursorVisible"], true);
+        assert_eq!((state["cursorRow"].as_u64(), state["cursorColumn"].as_u64()), (Some(3), Some(7)));
+        assert_eq!(state["cursorAnimation"]["intervalMs"], 750);
+        assert_eq!(state["cursorAnimation"]["phase"], "on");
     }
 
     #[test]
