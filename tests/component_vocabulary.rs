@@ -52,9 +52,19 @@ fn repository_owns_public_metadata() {
     let workflow =
         fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
     let makefile = fs::read_to_string("Makefile").expect("read Makefile");
-    for target in ["preflight:", "prepare:", "build:", "verify:"] {
+    for target in ["preflight:", "lock:", "prepare:", "build:", "verify:"] {
         assert!(makefile.contains(target), "Makefile omits {target}");
     }
+    assert!(
+        makefile.contains("cargo metadata --format-version 1"),
+        "Makefile lock target does not project Cargo.toml into Cargo.lock"
+    );
+    assert!(
+        fs::read_to_string("README.md")
+            .expect("read README")
+            .contains("make lock"),
+        "README omits make lock"
+    );
     assert!(Path::new("rust-toolchain.toml").is_file());
     assert!(Path::new(".python-version").is_file());
     for required in [
