@@ -34,8 +34,9 @@ change or an alternate-screen switch forces a full picture again. `offset` scrol
 history and is clamped to `historySize`. `terminal.status` reports `capabilities.hyperlinks` for the
 engine behind the sidecar.
 
-The mirror also publishes engine-owned cursor shape, blink state and the provider's configured blink
-interval. Warm rehydrate restores DECSCUSR. The shared native painter uses the declared terminal
+The mirror publishes engine-owned cursor shape and blink state as terminal state. It publishes the
+provider/user blink interval separately as animation policy. Warm rehydrate restores DECSCUSR but
+does not serialize animation phase or policy. The shared native painter uses the declared terminal
 theme's `cursor` and `cursorAccent` colors for block, underline and bar shapes; adapters do not
 re-parse CSI. Its condition variable has a deadline only while the engine says a visible cursor is
 blinking. Steady or hidden cursors wait only for explicit output/control events, and output activity

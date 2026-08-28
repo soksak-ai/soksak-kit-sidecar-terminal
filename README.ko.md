@@ -33,8 +33,9 @@ Checkpoint commit은 pane마다 thread와 process 전체에서 직렬화합니�
 화면을 강제합니다. `offset`은 viewport를 history 쪽으로 넘기며 `historySize`로 clamp됩니다.
 `terminal.status`는 engine의 `capabilities.hyperlinks`를 보고합니다.
 
-Mirror는 engine이 소유한 cursor shape, blink 상태와 provider가 설정한 blink interval도 게시합니다.
-Warm rehydrate는 DECSCUSR를 복원합니다. 공통 native painter는 선언된 terminal theme의 `cursor`와
+Mirror는 engine이 소유한 cursor shape와 blink 상태를 terminal state로 게시합니다. Provider/user가
+설정한 blink interval은 별도 animation policy로 게시합니다. Warm rehydrate는 DECSCUSR를 복원하지만
+animation phase나 policy를 직렬화하지 않습니다. 공통 native painter는 선언된 terminal theme의 `cursor`와
 `cursorAccent` 색으로 block, underline, bar를 그리며 adapter는 CSI를 다시 parse하지 않습니다.
 Condition variable은 engine이 visible cursor의 blinking을 선언한 동안에만 deadline을 가집니다.
 Steady 또는 hidden cursor는 명시적인 output/control event만 기다리고 output activity가 blink phase를
