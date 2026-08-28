@@ -268,7 +268,8 @@ impl SurfaceSessions {
             "surface.scroll" => self.scroll(request, wiring),
             "surface.read" => self.read(request, wiring),
             "surface.close" => self.close(request),
-            "surface.selection" | "surface.hover" | "surface.theme" => {
+            "surface.theme" => self.theme(request),
+            "surface.selection" | "surface.hover" => {
                 Err(refuse("NOT_YET_SERVED", format!("{command} arrives with the overlay pass")))
             }
             _ => Err(refuse("UNKNOWN_COMMAND", "unknown surface command")),
@@ -467,6 +468,28 @@ impl SurfaceSessions {
         }
         control.wake();
         Ok(json!({}))
+    }
+
+    fn theme(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let next = parse_theme(
+            request.get("theme").ok_or_else(|| refuse("INVALID_PARAMS", "theme is required"))?,
+        )?;
+        let control = self.control_of(&pane)?;
+        {
+            let mut fonts = self.fonts.lock().unwrap();
+            let font = fonts
+                .get_mut(&pane)
+                .ok_or_else(|| refuse("NOT_FOUND", format!("no surface renders {pane}")))?;
+            font.palette = next.base.clone();
+            let mut current = control.theme.lock().unwrap();
+            current.mode = next.mode;
+            current.base = next.base;
+            current.resolve();
+        }
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        self.state(request)
     }
 
     fn preedit(&self, request: &Value) -> Result<Value, SurfaceError> {
@@ -761,6 +784,8 @@ fn spawn_render_thread(
             let owes = progressed != last_seen || control.dirty.swap(false, Ordering::AcqRel);
             if owes && !control.paused.load(Ordering::Acquire) {
                 last_seen = progressed;
+                let base_palette = control.theme.lock().unwrap().base.clone();
+                painter.set_base_palette(base_palette);
                 let (offset, preedit) = {
                     let overlay = control.overlay.lock().unwrap();
                     (overlay.offset, overlay.preedit.clone())

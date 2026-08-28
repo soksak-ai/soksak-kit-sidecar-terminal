@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use common::{ink_in_cells, palette, GridMirror};
 use soksak_kit_sidecar_terminal::mirror::TerminalRgb;
+use soksak_kit_sidecar_terminal::render::instances::pack_bgra;
 use soksak_kit_sidecar_terminal::render::native::{Canvas, Surface};
 use soksak_kit_sidecar_terminal::render::painter::{Painter, Preedit, TargetState};
 
@@ -99,10 +100,18 @@ fn engine_background_override_repaints_and_reset_restores_the_base() {
     let red = canvas_read(&painter, &surface);
     assert_eq!(&red[..3], &[0, 0, 255], "OSC 11 background reaches BGRA pixels");
 
+    let mut changed_base = palette();
+    changed_base.bg = pack_bgra(0, 255, 0, 255);
+    painter.set_base_palette(changed_base);
+    let held = paint(&mut painter, &surface, &mut state, &mirror);
+    assert!(held.is_empty(), "an active terminal override keeps the same effective pixels");
+
     mirror.theme_overrides.background = None;
     let reset = paint(&mut painter, &surface, &mut state, &mirror);
     assert_eq!(reset, vec![0, 1], "OSC 111 reset invalidates every row");
-    assert_eq!(canvas_read(&painter, &surface), base, "reset reveals the current base theme");
+    let current_base = canvas_read(&painter, &surface);
+    assert_ne!(current_base, base, "the changed base replaces the original base");
+    assert_eq!(&current_base[..3], &[0, 255, 0], "reset reveals the current base theme");
 }
 
 

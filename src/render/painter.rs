@@ -138,6 +138,10 @@ impl Painter {
         )
     }
 
+    pub fn set_base_palette(&mut self, palette: Palette) {
+        self.base_palette = palette;
+    }
+
     /// Fold the mirror's viewport into the instance grid. `offset` scrolls
     /// into history; the cursor paints only at the bottom (offset 0) and only
     /// while the mirror shows it.
