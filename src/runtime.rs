@@ -172,6 +172,7 @@ impl Runtime {
             return Ok(false);
         }
         let observation = ObservationStream::subscribe(&self.runtime_root, info.session)?;
+        self.claim_checkpoint_generation(&key, info.generation)?;
         let mirror = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
@@ -298,6 +299,7 @@ impl Runtime {
         rows: u16,
     ) -> io::Result<()> {
         let key = (info.window_label.clone(), info.pane_id.clone());
+        self.claim_checkpoint_generation(&key, info.generation)?;
         let fresh = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
@@ -335,6 +337,14 @@ impl Runtime {
         // The waiting render thread learns the world changed.
         signal.1.notify_all();
         self.start_consumer(observation, mirror, key);
+        Ok(())
+    }
+
+    fn claim_checkpoint_generation(&self, key: &PaneKey, generation: u64) -> io::Result<()> {
+        if let Some(store) = &self.checkpoints {
+            let window = key.0.as_deref().unwrap_or("__no-window__");
+            store.claim_generation(window, &key.1, generation)?;
+        }
         Ok(())
     }
 
@@ -620,10 +630,6 @@ impl Runtime {
     }
 }
 
-/// A session that already produced output is one a live shell still owns —
-/// its archived screen is the truth to stand back up. A session at zero is a
-/// brand-new shell: replaying a dead shell's screen under it detaches the
-/// visible cursor from the real one.
 /// A session replacing another under the same key keeps the other's shared
 /// handles: a render thread wired to the old signal and mirror must see the
 /// new session's frames, not sleep on arcs nobody feeds again.
@@ -651,16 +657,15 @@ fn create_session_mirror(
             .and_then(|store| store.read(window, &key.1).ok())
             .flatten()
         {
-            // Only the same shell's screen stands back up: the checkpoint
-            // names the generation it was taken from, and a session adopted
-            // after a restart carries a new one. Replaying a dead shell's
-            // screen under a fresh prompt detached the visible cursor from
-            // the real one, and the bottom-row prompt it saved then came back
-            // on every boot.
+            mirror.feed(&checkpoint.paint);
             if checkpoint.generation == generation {
-                // The paint carries its own cursor: a live shell's screen
-                // stands back up exactly where it was.
-                mirror.feed(&checkpoint.paint);
+                // The same shell resumes at the cursor the checkpoint carries.
+            } else {
+                // A new shell cannot inherit the dead shell's cursor. Scroll one
+                // viewport so the archive becomes history, then clear and home
+                // the new viewport before its first live output arrives.
+                mirror.feed(&b"\r\n".repeat(rows as usize));
+                mirror.feed(b"\x1b[2J\x1b[H");
             }
         }
     }
@@ -1612,6 +1617,9 @@ mod tests {
     fn same_generation_resumes_and_new_generation_parks_history() {
         let home = test_root("checkpoint-archive-");
         let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [7; 32]).unwrap();
+        store
+            .claim_generation("window", "pane", 4)
+            .unwrap();
         store
             .write(
                 "window",

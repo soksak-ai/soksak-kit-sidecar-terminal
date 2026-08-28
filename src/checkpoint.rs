@@ -1,5 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -110,6 +110,13 @@ impl CheckpointStore {
         self.commit(&path, generation, sequence, &bytes)
     }
 
+    pub fn claim_generation(&self, window: &str, pane: &str, generation: u64) -> io::Result<()> {
+        let path = self.path(window, pane)?;
+        let mut lock = self.open_lock(&path)?;
+        lock.lock()?;
+        write_claimed_generation(&mut lock, Some(generation))
+    }
+
     pub fn read(&self, window: &str, pane: &str) -> io::Result<Option<ArchivedCheckpoint>> {
         let path = self.path(window, pane)?;
         let bytes = match fs::read(path) {
@@ -158,6 +165,9 @@ impl CheckpointStore {
 
     pub fn remove(&self, window: &str, pane: &str) -> io::Result<bool> {
         let path = self.path(window, pane)?;
+        let mut lock = self.open_lock(&path)?;
+        lock.lock()?;
+        write_claimed_generation(&mut lock, None)?;
         match fs::remove_file(path) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -173,7 +183,7 @@ impl CheckpointStore {
         .into_bytes()
     }
 
-    fn commit(&self, path: &Path, generation: u64, sequence: u64, bytes: &[u8]) -> io::Result<()> {
+    fn open_lock(&self, path: &Path) -> io::Result<File> {
         let lock_name = path.file_name().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -181,17 +191,52 @@ impl CheckpointStore {
             )
         })?;
         let lock_path = self.lock_directory.join(lock_name).with_extension("lock");
-        let lock = OpenOptions::new()
+        OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
-            .open(lock_path)?;
+            .open(lock_path)
+    }
+
+    fn commit(&self, path: &Path, generation: u64, sequence: u64, bytes: &[u8]) -> io::Result<()> {
+        let mut lock = self.open_lock(path)?;
         lock.lock()?;
-        if committed_position(path)?.is_some_and(|position| position >= (generation, sequence)) {
+        if claimed_generation(&mut lock)? != Some(generation) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "checkpoint generation does not own this pane",
+            ));
+        }
+        if committed_position(path)?
+            .is_some_and(|position| position.0 == generation && position.1 >= sequence)
+        {
             return Ok(());
         }
         atomic_write(path, bytes)
     }
+}
+
+fn claimed_generation(file: &mut File) -> io::Result<Option<u64>> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    match bytes.len() {
+        0 => Ok(None),
+        8 => Ok(Some(u64::from_be_bytes(bytes.try_into().unwrap()))),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid checkpoint generation owner",
+        )),
+    }
+}
+
+fn write_claimed_generation(file: &mut File, generation: Option<u64>) -> io::Result<()> {
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    if let Some(generation) = generation {
+        file.write_all(&generation.to_be_bytes())?;
+    }
+    file.sync_all()
 }
 
 fn validate_name(value: &str) -> io::Result<()> {

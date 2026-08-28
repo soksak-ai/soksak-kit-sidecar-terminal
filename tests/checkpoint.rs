@@ -32,6 +32,7 @@ fn checkpoint_round_trip_never_writes_plaintext() {
     let home = std::env::temp_dir().join(format!("soksak-checkpoint-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
+    store.claim_generation("window-a", "pane-a", 7).unwrap();
     store
         .write(
             "window-a",
@@ -63,6 +64,8 @@ fn corrupt_checkpoint_is_isolated_and_rejected() {
         std::env::temp_dir().join(format!("soksak-checkpoint-corrupt-{}", std::process::id()));
     let _ = fs::remove_dir_all(&home);
     let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
+    store.claim_generation("window-a", "pane-a", 1).unwrap();
+    store.claim_generation("window-a", "pane-b", 1).unwrap();
     store
         .write("window-a", "pane-a", 1, 2, b"screen-a", &frame())
         .unwrap();
@@ -107,12 +110,14 @@ fn older_checkpoint_cannot_replace_a_newer_commit() {
     let _ = fs::remove_dir_all(&home);
     let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
 
+    store.claim_generation("window-a", "pane-a", 8).unwrap();
     store
         .write("window-a", "pane-a", 8, 3, b"new-generation", &frame())
         .unwrap();
-    store
+    let stale = store
         .write("window-a", "pane-a", 7, 900, b"old-generation", &frame())
-        .unwrap();
+        .unwrap_err();
+    assert_eq!(stale.kind(), std::io::ErrorKind::PermissionDenied);
     store
         .write("window-a", "pane-a", 8, 2, b"old-sequence", &frame())
         .unwrap();
@@ -133,11 +138,19 @@ fn a_new_generation_is_selected_by_ownership_not_numeric_magnitude() {
     let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
 
     store
+        .claim_generation("window-a", "pane-a", u64::MAX - 1)
+        .unwrap();
+    store
         .write("window-a", "pane-a", u64::MAX - 1, 10, b"old-owner", &frame())
         .unwrap();
+    store.claim_generation("window-a", "pane-a", 7).unwrap();
     store
         .write("window-a", "pane-a", 7, 1, b"new-owner", &frame())
         .unwrap();
+    let stale = store
+        .write("window-a", "pane-a", u64::MAX - 1, 11, b"late-old-owner", &frame())
+        .unwrap_err();
+    assert_eq!(stale.kind(), std::io::ErrorKind::PermissionDenied);
 
     let opened = store.read("window-a", "pane-a").unwrap().unwrap();
     assert_eq!((opened.generation, opened.sequence), (7, 1));
@@ -155,6 +168,7 @@ fn concurrent_checkpoint_commits_do_not_collide_or_regress() {
     let _ = fs::remove_dir_all(&home);
     let store =
         Arc::new(CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap());
+    store.claim_generation("window-a", "pane-a", 9).unwrap();
     let barrier = Arc::new(Barrier::new(WRITERS));
     let writers = (0..WRITERS)
         .map(|sequence| {
