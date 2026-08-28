@@ -22,6 +22,16 @@ fn source_names_sidecars_directly() {
 }
 
 #[test]
+fn installation_exclusively_owns_the_sidecar_process_name() {
+    let runtime = fs::read_to_string("src/runtime.rs").expect("read runtime");
+    for forbidden in ["setprogname", "getprogname", "proc_name", "apply_darwin_process_name"] {
+        assert!(!runtime.contains(forbidden), "runtime rewrites process name with {forbidden}");
+    }
+    let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    assert!(!manifest.lines().any(|line| line.starts_with("libc =")), "process-name libc dependency remains");
+}
+
+#[test]
 fn repository_owns_public_metadata() {
     let manifest = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
     assert!(manifest.lines().any(|line| line == r#"edition = "2024""#));
