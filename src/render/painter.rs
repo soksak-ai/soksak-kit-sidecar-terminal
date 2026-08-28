@@ -21,6 +21,7 @@ impl TargetState {
     }
 }
 use crate::mirror::{TerminalCell, TerminalColor};
+use crate::mirror::TerminalThemeOverrides;
 use crate::TerminalStateMirror;
 
 /// An IME composition shown at the cursor. It paints as an overlay and its
@@ -146,8 +147,9 @@ impl Painter {
         offset: usize,
         preedit: Option<&Preedit>,
         cursor_on: bool,
-    ) -> Result<(), String> {
-        let effective_palette = self.base_palette.resolve(&mirror.theme_overrides());
+    ) -> Result<TerminalThemeOverrides, String> {
+        let overrides = mirror.theme_overrides();
+        let effective_palette = self.base_palette.resolve(&overrides);
         if self.palette != effective_palette {
             self.palette = effective_palette;
             self.palette_revision = self.palette_revision.wrapping_add(1);
@@ -195,7 +197,7 @@ impl Painter {
             self.build_row(row, &cells, cursor_cell, overlay)?;
             self.hashes[row as usize] = Some(hash);
         }
-        Ok(())
+        Ok(overrides)
     }
 
     /// Bring one target surface up to the current grid and return the rows it

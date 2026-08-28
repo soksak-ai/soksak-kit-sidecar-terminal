@@ -801,7 +801,7 @@ fn spawn_render_thread(
                 if let Err(error) = &refresh {
                     *control.last_error.lock().unwrap() = Some(format!("refresh: {error}"));
                 }
-                if refresh.is_ok() {
+                if let Ok(applied_overrides) = refresh {
                     if let Ok(slot) = ring.acquire() {
                         let (surface, state) = ring.target(slot);
                         if let Ok(rows) = painter.paint_into(surface, state) {
@@ -836,6 +836,9 @@ fn spawn_render_thread(
                                 ) {
                                     Ok(()) => {
                                         control.sends.fetch_add(1, Ordering::AcqRel);
+                                        let mut theme = control.theme.lock().unwrap();
+                                        theme.overrides = applied_overrides.clone();
+                                        theme.resolve();
                                     }
                                     Err(error) => {
                                         *control.last_error.lock().unwrap() =
