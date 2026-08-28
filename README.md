@@ -43,6 +43,8 @@ engine's OSC 4/10/11/12 state over it. A null override means no terminal overrid
 effective palette invalidates every row and advances the rendered frame before `surface.state`
 publishes `themeMode`, `baseTheme`, `terminalOverrides` and `effectiveTheme`. Providers expose
 engine color state through `TerminalStateMirror.theme_overrides`; adapters do not parse OSC.
+`surface.theme` validates one complete replacement base, preserves active engine overrides,
+updates the resize palette and wakes the render thread. It does not reopen the surface or poll.
 
 ## Verification
 

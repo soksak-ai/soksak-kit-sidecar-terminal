@@ -41,6 +41,8 @@ Native painter는 host가 명시한 `light|dark` base palette 위에 engine의 O
 무효화하고 적용 frame을 전진시킨 뒤 `surface.state`가 `themeMode`, `baseTheme`,
 `terminalOverrides`, `effectiveTheme`을 게시합니다. Provider는 engine color state를
 `TerminalStateMirror.theme_overrides`로 공개하며 adapter는 OSC를 다시 parse하지 않습니다.
+`surface.theme`은 완전한 replacement base 하나를 검증하고 active engine override를 보존하며
+resize palette를 갱신한 뒤 render thread를 깨웁니다. Surface를 다시 열거나 polling하지 않습니다.
 
 ## 검증
 
