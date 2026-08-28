@@ -1,9 +1,12 @@
 SHELL := /bin/sh
 
-.PHONY: preflight prepare build verify
+.PHONY: preflight lock prepare build verify
 
 preflight:
 	@scripts/check-build-environment.sh
+
+lock: preflight
+	@cargo metadata --format-version 1 > /dev/null
 
 prepare: preflight
 	@cargo fetch --locked

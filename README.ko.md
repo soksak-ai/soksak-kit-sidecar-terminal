@@ -46,8 +46,12 @@ compatibility path로 받아들이지 않습니다.
 ## 검증
 
 ```sh
+make lock
 make verify
 ```
+
+`make lock`은 변경된 `Cargo.toml`을 기존 dependency resolution을 유지한 채 `Cargo.lock`에 투영하는
+owner 연산입니다. 일반 build와 verify는 계속 `--locked`로 실행합니다.
 
 정확한 toolchain 정본은 `rust-toolchain.toml`과 `.python-version`입니다. Make는 dependency를
 준비하기 전에 version과 architecture 불일치를 거부하고 Rust suite와 PTY release installer

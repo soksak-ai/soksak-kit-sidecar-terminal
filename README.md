@@ -47,8 +47,12 @@ shape-less checkpoint form is not accepted through a compatibility path.
 ## Verification
 
 ```sh
+make lock
 make verify
 ```
+
+`make lock` is the owner operation that projects a changed `Cargo.toml` into `Cargo.lock` while
+preserving the existing dependency resolution. Normal build and verification remain `--locked`.
 
 `rust-toolchain.toml` and `.python-version` are the exact toolchain owners. Make rejects a mismatched
 version or architecture before dependency materialization, then runs both the Rust suite and the PTY
