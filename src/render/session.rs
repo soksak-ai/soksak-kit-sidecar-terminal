@@ -746,4 +746,30 @@ mod tests {
         assert_eq!(palette.cursor, pack_bgra(0x77, 0x88, 0x99, 255));
         assert_eq!(palette.cursor_accent, pack_bgra(0xaa, 0xbb, 0xcc, 255));
     }
+
+    #[test]
+    fn cursor_animation_ticks_only_for_engine_blinking_state() {
+        use crate::mirror::{TerminalCursorShape, TerminalCursorStyle};
+
+        let steady = TerminalCursorStyle {
+            shape: TerminalCursorShape::Bar,
+            blinking: false,
+            blink_interval_ms: 750,
+        };
+        let blinking = TerminalCursorStyle { blinking: true, ..steady };
+        let mut animation = CursorAnimation::new();
+        animation.observe(steady, true, true);
+        assert_eq!(animation.next_tick(), None);
+        assert!(animation.cursor_on());
+
+        animation.observe(blinking, true, true);
+        assert_eq!(animation.next_tick(), Some(Duration::from_millis(750)));
+        assert!(animation.tick());
+        assert!(!animation.cursor_on());
+        assert!(animation.tick());
+        assert!(animation.cursor_on());
+
+        animation.observe(blinking, false, false);
+        assert_eq!(animation.next_tick(), None);
+    }
 }
