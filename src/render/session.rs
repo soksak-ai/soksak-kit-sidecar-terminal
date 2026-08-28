@@ -881,6 +881,18 @@ mod tests {
     }
 
     #[test]
+    fn surface_state_exposes_base_override_and_effective_theme() {
+        let sessions = SurfaceSessions::new();
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
+        let state = sessions.state(&json!({ "pane": "tab-a.1" })).expect("surface state");
+        assert_eq!(state["themeMode"], "light");
+        assert_eq!(state["baseTheme"]["foreground"], "#111111");
+        assert_eq!(state["terminalOverrides"]["foreground"], Value::Null);
+        assert_eq!(state["terminalOverrides"]["ansi"].as_array().map(Vec::len), Some(256));
+        assert_eq!(state["effectiveTheme"]["foreground"], "#111111");
+    }
+
+    #[test]
     fn terminal_theme_keeps_the_declared_cursor_colors() {
         let theme = json!({
             "fg": "#112233", "bg": "#445566", "cursor": "#778899",
