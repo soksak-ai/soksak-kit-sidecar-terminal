@@ -1021,6 +1021,39 @@ mod tests {
     }
 
     #[test]
+    fn surface_theme_updates_base_without_dropping_engine_overrides() {
+        let sessions = SurfaceSessions::new();
+        let control = control("tab-a.1");
+        {
+            let mut theme = control.theme.lock().unwrap();
+            theme.overrides.foreground = Some(TerminalRgb { r: 0xab, g: 0xcd, b: 0xef });
+            theme.resolve();
+        }
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), Arc::clone(&control));
+        sessions.fonts.lock().unwrap().insert("tab-a.1".into(), FontChoice {
+            family: "Menlo".into(), pt: 13.0, palette: test_theme().base,
+        });
+        let theme = json!({
+            "mode": "dark",
+            "fg": "#223344", "bg": "#050607", "cursor": "#778899",
+            "cursorAccent": "#aabbcc", "selectionBg": "#101112",
+            "selectionFg": "#223344", "ansi": vec!["#131415"; 256],
+        });
+        let changed = sessions.command(
+            "sidecar", "surface.theme", &json!({ "pane": "tab-a.1", "theme": theme }), None,
+        ).expect("surface.theme");
+        assert_eq!(changed["themeMode"], "dark");
+        assert_eq!(changed["baseTheme"]["background"], "#050607");
+        assert_eq!(changed["terminalOverrides"]["foreground"], "#abcdef");
+        assert_eq!(changed["effectiveTheme"]["foreground"], "#abcdef");
+        assert!(control.dirty.load(Ordering::Acquire));
+        assert_eq!(
+            sessions.fonts.lock().unwrap()["tab-a.1"].palette.bg,
+            pack_bgra(0x05, 0x06, 0x07, 255),
+        );
+    }
+
+    #[test]
     fn terminal_theme_keeps_the_declared_cursor_colors() {
         let theme = json!({
             "mode": "dark",
