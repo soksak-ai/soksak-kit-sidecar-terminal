@@ -29,6 +29,8 @@ pub trait TerminalStateMirror: Send {
     fn rows(&self) -> u16;
     /// `(row, col)`, 0-based, in the viewport.
     fn cursor(&self) -> (usize, usize);
+    /// Cursor shape/blink as interpreted by the engine.
+    fn cursor_style(&self) -> mirror::TerminalCursorStyle;
     /// The cells of one viewport row; negative rows reach into history.
     fn line_cells(&self, line: i32) -> Vec<crate::mirror::TerminalCell>;
 }

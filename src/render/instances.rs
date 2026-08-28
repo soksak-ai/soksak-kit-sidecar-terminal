@@ -2,7 +2,7 @@
 //! reads its cell's instance, paints the background and mixes glyph coverage
 //! over it. Pure Rust — colors resolve here, never on the GPU.
 
-use crate::mirror::{TerminalCell, TerminalColor};
+use crate::mirror::{TerminalCell, TerminalColor, TerminalCursorShape, TerminalCursorStyle};
 
 /// Exactly 32 bytes, matched by the shader's struct stride.
 #[repr(C)]
@@ -27,6 +27,8 @@ pub struct GpuCell {
 pub const FLAG_UNDERLINE: u32 = 1;
 pub const FLAG_STRIKEOUT: u32 = 2;
 pub const FLAG_WIDE: u32 = 4;
+pub const FLAG_CURSOR_UNDERLINE: u32 = 8;
+pub const FLAG_CURSOR_BAR: u32 = 16;
 
 pub fn pack_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
     (b as u32) | ((g as u32) << 8) | ((r as u32) << 16) | ((a as u32) << 24)
@@ -37,6 +39,8 @@ pub fn pack_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
 pub struct Palette {
     pub fg: u32,
     pub bg: u32,
+    pub cursor: u32,
+    pub cursor_accent: u32,
     pub ansi: [u32; 256],
 }
 
@@ -60,6 +64,19 @@ impl Palette {
             TerminalColor::Named(index) | TerminalColor::Indexed(index) => self.ansi[index as usize],
             TerminalColor::Rgb(r, g, b) => pack_bgra(r, g, b, 255),
         }
+    }
+}
+
+pub fn apply_cursor(cell: &mut GpuCell, style: TerminalCursorStyle, palette: &Palette) {
+    cell.flags &= !(FLAG_CURSOR_UNDERLINE | FLAG_CURSOR_BAR);
+    cell.reserved = palette.cursor;
+    match style.shape {
+        TerminalCursorShape::Block => {
+            cell.fg = palette.cursor_accent;
+            cell.bg = palette.cursor;
+        }
+        TerminalCursorShape::Underline => cell.flags |= FLAG_CURSOR_UNDERLINE,
+        TerminalCursorShape::Bar => cell.flags |= FLAG_CURSOR_BAR,
     }
 }
 
@@ -166,7 +183,13 @@ mod tests {
         for (index, slot) in ansi.iter_mut().enumerate() {
             *slot = index as u32;
         }
-        Palette { fg: pack_bgra(230, 230, 230, 255), bg: pack_bgra(10, 10, 10, 255), ansi }
+        Palette {
+            fg: pack_bgra(230, 230, 230, 255),
+            bg: pack_bgra(10, 10, 10, 255),
+            cursor: pack_bgra(240, 240, 240, 255),
+            cursor_accent: pack_bgra(12, 12, 12, 255),
+            ansi,
+        }
     }
 
     fn slot() -> GlyphPlacement {
@@ -224,16 +247,22 @@ mod tests {
     fn cursor_shapes_use_the_declared_cursor_colors() {
         let theme = palette();
         let mut block = row_instances(&[plain('x')], 12, &theme, &mut |_| Some(slot()))[0];
-        apply_cursor(&mut block, TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false }, &theme);
+        apply_cursor(&mut block, TerminalCursorStyle {
+            shape: TerminalCursorShape::Block, blinking: false, blink_interval_ms: 750,
+        }, &theme);
         assert_eq!((block.fg, block.bg), (theme.cursor_accent, theme.cursor));
 
         let mut underline = block;
-        apply_cursor(&mut underline, TerminalCursorStyle { shape: TerminalCursorShape::Underline, blinking: false }, &theme);
+        apply_cursor(&mut underline, TerminalCursorStyle {
+            shape: TerminalCursorShape::Underline, blinking: false, blink_interval_ms: 750,
+        }, &theme);
         assert_ne!(underline.flags & FLAG_CURSOR_UNDERLINE, 0);
         assert_eq!(underline.reserved, theme.cursor);
 
         let mut bar = block;
-        apply_cursor(&mut bar, TerminalCursorStyle { shape: TerminalCursorShape::Bar, blinking: true }, &theme);
+        apply_cursor(&mut bar, TerminalCursorStyle {
+            shape: TerminalCursorShape::Bar, blinking: true, blink_interval_ms: 750,
+        }, &theme);
         assert_ne!(bar.flags & FLAG_CURSOR_BAR, 0);
         assert_eq!(bar.reserved, theme.cursor);
     }

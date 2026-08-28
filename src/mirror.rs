@@ -8,6 +8,24 @@ pub enum TerminalColor {
     Rgb(u8, u8, u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TerminalCursorShape {
+    Block,
+    Underline,
+    Bar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCursorStyle {
+    pub shape: TerminalCursorShape,
+    pub blinking: bool,
+    /// Renderer policy selected by this provider. Zero means the provider has
+    /// no animation interval and therefore cannot schedule blinking.
+    pub blink_interval_ms: u32,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalModes {
@@ -64,6 +82,7 @@ pub trait TerminalEngine: Send + Sized {
     fn cols(&self) -> u16;
     fn rows(&self) -> u16;
     fn cursor(&self) -> (usize, usize);
+    fn cursor_style(&self) -> TerminalCursorStyle;
     fn alt_active(&self) -> bool;
     fn history_size(&self) -> usize;
     fn modes(&self) -> TerminalModes;
@@ -98,6 +117,7 @@ pub struct TerminalFrame {
     /// `(row, col)`, 0-based.
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
+    pub cursor_style: TerminalCursorStyle,
     pub alt_active: bool,
     pub history_size: usize,
     pub offset: usize,
@@ -211,6 +231,7 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
             output.extend(cup(self.engine.cursor()));
         }
         output.extend(mode_sets(self.engine.modes()));
+        output.extend(cursor_style_set(self.engine.cursor_style()));
         output
     }
 
@@ -243,6 +264,9 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
     }
     pub fn cursor(&self) -> (usize, usize) {
         self.engine.cursor()
+    }
+    pub fn cursor_style(&self) -> TerminalCursorStyle {
+        self.engine.cursor_style()
     }
     pub fn modes(&self) -> TerminalModes {
         self.engine.modes()
@@ -280,6 +304,7 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
             rows: self.engine.rows(),
             cursor: self.engine.cursor(),
             cursor_visible: modes.show_cursor,
+            cursor_style: self.engine.cursor_style(),
             alt_active,
             history_size,
             offset,
@@ -519,6 +544,18 @@ fn mode_sets(modes: TerminalModes) -> Vec<u8> {
     output
 }
 
+fn cursor_style_set(style: TerminalCursorStyle) -> Vec<u8> {
+    let parameter = match (style.shape, style.blinking) {
+        (TerminalCursorShape::Block, true) => 1,
+        (TerminalCursorShape::Block, false) => 2,
+        (TerminalCursorShape::Underline, true) => 3,
+        (TerminalCursorShape::Underline, false) => 4,
+        (TerminalCursorShape::Bar, true) => 5,
+        (TerminalCursorShape::Bar, false) => 6,
+    };
+    format!("\x1b[{parameter} q").into_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,7 +578,11 @@ mod tests {
             (0, 0)
         }
         fn cursor_style(&self) -> TerminalCursorStyle {
-            TerminalCursorStyle { shape: TerminalCursorShape::Bar, blinking: false }
+            TerminalCursorStyle {
+                shape: TerminalCursorShape::Bar,
+                blinking: false,
+                blink_interval_ms: 750,
+            }
         }
         fn alt_active(&self) -> bool {
             false

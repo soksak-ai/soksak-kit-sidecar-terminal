@@ -501,6 +501,9 @@ static NSString *const kCellShader = @""
     "    uint yy = gid.y % p.cellH;\n"
     "    if ((cell.flags & 1u) != 0u && yy >= p.cellH - 2u) { color = unpackColor(cell.fg); }\n"
     "    if ((cell.flags & 2u) != 0u && yy == p.cellH / 2u) { color = unpackColor(cell.fg); }\n"
+    "    if ((cell.flags & 8u) != 0u && yy >= p.cellH - 2u) { color = unpackColor(cell.reserved); }\n"
+    "    uint xx = gid.x % p.cellW;\n"
+    "    if ((cell.flags & 16u) != 0u && xx < max(2u, p.cellW / 8u)) { color = unpackColor(cell.reserved); }\n"
     "    out.write(color, uint2(gid.x, absY));\n"
     "}\n";
 

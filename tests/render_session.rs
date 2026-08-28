@@ -9,6 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use common::{GridMirror, SharedGrid};
 use serde_json::json;
 use soksak_contract_surface::Message;
+use soksak_kit_sidecar_terminal::mirror::{TerminalCursorShape, TerminalCursorStyle};
 use soksak_kit_sidecar_terminal::render::channel::ChannelHost;
 use soksak_kit_sidecar_terminal::render::session::{FrameSignal, SharedMirror, SurfaceSessions};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
@@ -163,4 +164,34 @@ fn read_returns_the_viewport_text() {
         )
         .expect("read answers");
     assert!(reply["text"].as_str().unwrap().starts_with("hi"));
+}
+
+#[test]
+fn engine_blink_state_schedules_a_cursor_frame_without_output_polling() {
+    let bench = bench("blink");
+    {
+        let mut grid = bench.grid.lock().unwrap();
+        grid.cursor_visible = true;
+        grid.cursor_style = TerminalCursorStyle {
+            shape: TerminalCursorShape::Bar,
+            blinking: true,
+            blink_interval_ms: 20,
+        };
+    }
+    open_and_receive(&bench);
+    let (frame, _) = bench
+        .host
+        .recv(500)
+        .expect("host answers")
+        .expect("the renderer-owned blink clock emits a frame");
+    assert!(matches!(frame, Message::FrameReady { .. }));
+    bench
+        .sessions
+        .command(
+            "soksak-sidecar-terminal-test",
+            "surface.close",
+            &json!({"pane": "tab-test.1"}),
+            None,
+        )
+        .expect("close lands");
 }

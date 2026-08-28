@@ -2,7 +2,8 @@
 #![allow(dead_code)]
 
 use soksak_kit_sidecar_terminal::mirror::{
-    MirrorCapabilities, TerminalCell, TerminalColor, TerminalFrame, TerminalModes,
+    MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorShape, TerminalCursorStyle,
+    TerminalFrame, TerminalModes,
 };
 use soksak_kit_sidecar_terminal::render::instances::{pack_bgra, Palette};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
@@ -31,6 +32,8 @@ pub struct GridMirror {
     pub cols: u16,
     pub grid: Vec<Vec<TerminalCell>>,
     pub cursor: (usize, usize),
+    pub cursor_visible: bool,
+    pub cursor_style: TerminalCursorStyle,
 }
 
 impl GridMirror {
@@ -58,7 +61,17 @@ impl GridMirror {
                 cells
             })
             .collect();
-        Self { cols, grid, cursor: (0, 0) }
+        Self {
+            cols,
+            grid,
+            cursor: (0, 0),
+            cursor_visible: false,
+            cursor_style: TerminalCursorStyle {
+                shape: TerminalCursorShape::Block,
+                blinking: false,
+                blink_interval_ms: 750,
+            },
+        }
     }
 }
 
@@ -76,7 +89,8 @@ impl TerminalStateMirror for GridMirror {
             cols: self.cols,
             rows: self.grid.len() as u16,
             cursor: self.cursor,
-            cursor_visible: false,
+            cursor_visible: self.cursor_visible,
+            cursor_style: self.cursor_style(),
             alt_active: false,
             history_size: 0,
             offset,
@@ -88,7 +102,7 @@ impl TerminalStateMirror for GridMirror {
         0
     }
     fn modes(&self) -> TerminalModes {
-        TerminalModes::default()
+        TerminalModes { show_cursor: self.cursor_visible, ..TerminalModes::default() }
     }
     fn capabilities(&self) -> MirrorCapabilities {
         MirrorCapabilities::default()
@@ -108,6 +122,9 @@ impl TerminalStateMirror for GridMirror {
     fn cursor(&self) -> (usize, usize) {
         self.cursor
     }
+    fn cursor_style(&self) -> TerminalCursorStyle {
+        self.cursor_style
+    }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         if line < 0 {
             return Vec::new();
@@ -120,6 +137,8 @@ pub fn palette() -> Palette {
     Palette {
         fg: pack_bgra(230, 230, 230, 255),
         bg: pack_bgra(10, 10, 10, 255),
+        cursor: pack_bgra(240, 240, 240, 255),
+        cursor_accent: pack_bgra(12, 12, 12, 255),
         ansi: [pack_bgra(10, 10, 10, 255); 256],
     }
 }
@@ -188,6 +207,9 @@ impl TerminalStateMirror for SharedGrid {
     }
     fn cursor(&self) -> (usize, usize) {
         self.0.lock().unwrap().cursor()
+    }
+    fn cursor_style(&self) -> TerminalCursorStyle {
+        self.0.lock().unwrap().cursor_style()
     }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         self.0.lock().unwrap().line_cells(line)

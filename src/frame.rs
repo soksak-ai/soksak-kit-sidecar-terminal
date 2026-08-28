@@ -174,6 +174,7 @@ pub struct FrameReply {
     pub rows: u16,
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
+    pub cursor_style: crate::mirror::TerminalCursorStyle,
     pub alt_active: bool,
     pub history_size: usize,
     pub offset: usize,
@@ -190,6 +191,7 @@ impl FrameReply {
             rows: frame.rows,
             cursor: frame.cursor,
             cursor_visible: frame.cursor_visible,
+            cursor_style: frame.cursor_style,
             alt_active: frame.alt_active,
             history_size: frame.history_size,
             offset: frame.offset,
@@ -300,6 +302,7 @@ impl FrameSubscribers {
 mod tests {
     use super::*;
     use crate::mirror::{RecoveryMirror, TerminalEngine};
+    use crate::mirror::{TerminalCursorShape, TerminalCursorStyle};
 
     fn cell(ch: char) -> TerminalCell {
         TerminalCell {
@@ -335,6 +338,11 @@ mod tests {
             rows: rows.len() as u16,
             cursor: (0, 0),
             cursor_visible: true,
+            cursor_style: TerminalCursorStyle {
+                shape: TerminalCursorShape::Block,
+                blinking: false,
+                blink_interval_ms: 750,
+            },
             alt_active: false,
             history_size: 0,
             offset: 0,
@@ -539,6 +547,13 @@ mod tests {
                 self.lines.len().min(self.rows as usize).saturating_sub(1),
                 0,
             )
+        }
+        fn cursor_style(&self) -> TerminalCursorStyle {
+            TerminalCursorStyle {
+                shape: TerminalCursorShape::Block,
+                blinking: false,
+                blink_interval_ms: 750,
+            }
         }
         fn alt_active(&self) -> bool {
             false

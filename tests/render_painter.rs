@@ -26,7 +26,7 @@ fn paint(
     state: &mut TargetState,
     mirror: &GridMirror,
 ) -> Vec<u16> {
-    painter.refresh(mirror, 0, None).expect("refreshes");
+    painter.refresh(mirror, 0, None, true).expect("refreshes");
     painter.paint_into(surface, state).expect("paints")
 }
 
@@ -92,7 +92,7 @@ fn preedit_paints_underlined_at_the_cursor_and_leaves_when_cleared() {
     let mirror = GridMirror::from_rows(8, &["        "]);
     paint(&mut painter, &surface, &mut state, &mirror);
     let preedit = Preedit { text: "한".to_string(), cursor: 1 };
-    painter.refresh(&mirror, 0, Some(&preedit)).expect("refreshes");
+    painter.refresh(&mirror, 0, Some(&preedit), true).expect("refreshes");
     let dirty = painter.paint_into(&surface, &mut state).expect("paints");
     assert_eq!(dirty, vec![0], "the composition owes its row");
     let pixels = canvas_read(&painter, &surface);
@@ -109,7 +109,7 @@ fn preedit_paints_underlined_at_the_cursor_and_leaves_when_cleared() {
         }
     }
     assert!(underline >= 2 * cell.0 as u64, "the composition is underlined: {underline}");
-    painter.refresh(&mirror, 0, None).expect("refreshes");
+    painter.refresh(&mirror, 0, None, true).expect("refreshes");
     let cleared = painter.paint_into(&surface, &mut state).expect("paints");
     assert_eq!(cleared, vec![0], "clearing the composition owes the row again");
     let after = canvas_read(&painter, &surface);

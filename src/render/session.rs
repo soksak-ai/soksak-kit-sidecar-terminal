@@ -16,6 +16,7 @@ use super::instances::{pack_bgra, Palette};
 use super::native::Canvas;
 use super::painter::{Painter, Preedit};
 use super::surface_ring::SurfaceRing;
+use crate::mirror::TerminalCursorStyle;
 use crate::TerminalStateMirror;
 
 pub type SharedMirror = Arc<Mutex<Box<dyn TerminalStateMirror>>>;
@@ -58,6 +59,43 @@ struct FontChoice {
     family: String,
     pt: f64,
     palette: Palette,
+}
+
+struct CursorAnimation {
+    active: bool,
+    on: bool,
+    interval: Duration,
+}
+
+impl CursorAnimation {
+    fn new() -> Self {
+        Self { active: false, on: true, interval: Duration::ZERO }
+    }
+
+    fn observe(&mut self, style: TerminalCursorStyle, visible: bool, activity: bool) {
+        let active = visible && style.blinking && style.blink_interval_ms > 0;
+        if activity || active != self.active {
+            self.on = true;
+        }
+        self.active = active;
+        self.interval = Duration::from_millis(style.blink_interval_ms as u64);
+    }
+
+    fn next_tick(&self) -> Option<Duration> {
+        self.active.then_some(self.interval)
+    }
+
+    fn cursor_on(&self) -> bool {
+        !self.active || self.on
+    }
+
+    fn tick(&mut self) -> bool {
+        if !self.active {
+            return false;
+        }
+        self.on = !self.on;
+        true
+    }
 }
 
 pub struct SurfaceSessions {
@@ -479,6 +517,8 @@ fn parse_hex(text: &str) -> Option<u32> {
 fn parse_theme(theme: &Value) -> Result<Palette, SurfaceError> {
     let fg = parse_color(theme, "fg")?;
     let bg = parse_color(theme, "bg")?;
+    let cursor = parse_color(theme, "cursor")?;
+    let cursor_accent = parse_color(theme, "cursorAccent")?;
     let ansi_values = theme
         .get("ansi")
         .and_then(Value::as_array)
@@ -494,7 +534,7 @@ fn parse_theme(theme: &Value) -> Result<Palette, SurfaceError> {
         ansi[index] = parse_hex(text)
             .ok_or_else(|| refuse("INVALID_PARAMS", format!("theme.ansi[{index}] is not a color")))?;
     }
-    Ok(Palette { fg, bg, ansi })
+    Ok(Palette { fg, bg, cursor, cursor_accent, ansi })
 }
 
 /// One painter and one ring for one pixel box: the same construction whether
@@ -530,6 +570,7 @@ fn spawn_render_thread(
             *seq.lock().unwrap()
         };
         let mut last_signaled: Option<usize> = None;
+        let mut cursor_animation = CursorAnimation::new();
         loop {
             if control.stop.load(Ordering::Acquire) {
                 let _ = channel.send(
@@ -583,6 +624,7 @@ fn spawn_render_thread(
                 let (seq, _) = &*control.signal;
                 *seq.lock().unwrap()
             };
+            let output_activity = progressed != last_seen;
             let owes = progressed != last_seen || control.dirty.swap(false, Ordering::AcqRel);
             if owes && !control.paused.load(Ordering::Acquire) {
                 last_seen = progressed;
@@ -596,8 +638,18 @@ fn spawn_render_thread(
                     let mirror = mirror.lock().unwrap();
                     let cursor = mirror.cursor();
                     let visible = mirror.modes().show_cursor;
-                    let refresh =
-                        painter.refresh(&**mirror, offset, preedit_value.as_ref());
+                    let style = mirror.cursor_style();
+                    cursor_animation.observe(
+                        style,
+                        visible && offset == 0 && preedit_value.is_none(),
+                        output_activity,
+                    );
+                    let refresh = painter.refresh(
+                        &**mirror,
+                        offset,
+                        preedit_value.as_ref(),
+                        cursor_animation.cursor_on(),
+                    );
                     (cursor, visible, refresh)
                 };
                 if let Err(error) = &refresh {
@@ -661,7 +713,16 @@ fn spawn_render_thread(
                 && !control.dirty.load(Ordering::Acquire)
                 && !control.stop.load(Ordering::Acquire)
             {
-                let _ = ready.wait_timeout(guard, Duration::from_millis(500)).unwrap();
+                if !control.paused.load(Ordering::Acquire) {
+                    if let Some(interval) = cursor_animation.next_tick() {
+                        let (_guard, result) = ready.wait_timeout(guard, interval).unwrap();
+                        if result.timed_out() && cursor_animation.tick() {
+                            control.dirty.store(true, Ordering::Release);
+                        }
+                        continue;
+                    }
+                }
+                let _guard = ready.wait(guard).unwrap();
             }
         }
     });

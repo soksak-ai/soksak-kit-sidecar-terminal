@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use super::atlas::{Atlas, GlyphKey, ATLAS_PAGE_SIZE};
-use super::instances::{row_instances, GlyphPlacement, GpuCell, Palette};
+use super::instances::{apply_cursor, row_instances, GlyphPlacement, GpuCell, Palette};
 use super::native::{AtlasTexture, Canvas, Surface};
 
 /// What one target surface currently shows, row by row. Three ring surfaces
@@ -141,9 +141,11 @@ impl Painter {
         mirror: &dyn TerminalStateMirror,
         offset: usize,
         preedit: Option<&Preedit>,
+        cursor_on: bool,
     ) -> Result<(), String> {
-        let show_cursor = mirror.modes().show_cursor && offset == 0;
+        let show_cursor = mirror.modes().show_cursor && offset == 0 && cursor_on;
         let cursor = mirror.cursor();
+        let cursor_style = mirror.cursor_style();
         for row in 0..self.rows {
             let line = row as i32 - offset as i32;
             let cells = mirror.line_cells(line);
@@ -153,6 +155,14 @@ impl Painter {
             let cursor_here = show_cursor && cursor.0 == row as usize && !preedit_here;
             if cursor_here {
                 hash ^= 0x9E37_79B9_7F4A_7C15u64.wrapping_add(cursor.1 as u64);
+                hash ^= match (cursor_style.shape, cursor_style.blinking) {
+                    (crate::mirror::TerminalCursorShape::Block, false) => 0x10,
+                    (crate::mirror::TerminalCursorShape::Block, true) => 0x11,
+                    (crate::mirror::TerminalCursorShape::Underline, false) => 0x20,
+                    (crate::mirror::TerminalCursorShape::Underline, true) => 0x21,
+                    (crate::mirror::TerminalCursorShape::Bar, false) => 0x30,
+                    (crate::mirror::TerminalCursorShape::Bar, true) => 0x31,
+                };
             }
             if preedit_here {
                 let composition = preedit.unwrap();
@@ -165,13 +175,13 @@ impl Painter {
             if self.hashes[row as usize] == Some(hash) {
                 continue;
             }
-            let cursor_col = if cursor_here { Some(cursor.1) } else { None };
+            let cursor_cell = if cursor_here { Some((cursor.1, cursor_style)) } else { None };
             let overlay = if preedit_here {
                 Some((preedit.unwrap(), cursor.1))
             } else {
                 None
             };
-            self.build_row(row, &cells, cursor_col, overlay)?;
+            self.build_row(row, &cells, cursor_cell, overlay)?;
             self.hashes[row as usize] = Some(hash);
         }
         Ok(())
@@ -232,7 +242,7 @@ impl Painter {
         &mut self,
         row: u16,
         cells: &[TerminalCell],
-        cursor_col: Option<usize>,
+        cursor: Option<(usize, crate::mirror::TerminalCursorStyle)>,
         preedit: Option<(&Preedit, usize)>,
     ) -> Result<(), String> {
         let cols = self.cols as usize;
@@ -291,10 +301,15 @@ impl Painter {
         let mut instances = row_instances(cells, cell_w, &self.palette, &mut glyph);
         instances.truncate(self.cols as usize);
         instances.resize(self.cols as usize, background_only(&self.palette));
-        if let Some(col) = cursor_col.or(preedit_cursor) {
+        if let Some((col, style)) = cursor.or_else(|| {
+            preedit_cursor.map(|col| (col, crate::mirror::TerminalCursorStyle {
+                shape: crate::mirror::TerminalCursorShape::Bar,
+                blinking: false,
+                blink_interval_ms: 0,
+            }))
+        }) {
             if col < instances.len() {
-                let cell = &mut instances[col];
-                std::mem::swap(&mut cell.fg, &mut cell.bg);
+                apply_cursor(&mut instances[col], style, &self.palette);
             }
         }
         let base = row as usize * self.cols as usize;
