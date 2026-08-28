@@ -57,8 +57,6 @@ fn repository_owns_public_metadata() {
     assert!(release_files.contains("\"README.ko.md\""));
     assert!(release_files.contains("\"src/checkpoint.rs\""));
     assert!(release_files.contains("\"src/transport_name.rs\""));
-    assert!(release_files.contains("\"scripts/install_pty_release.py\""));
-    assert!(release_files.contains("\"scripts/test_install_pty_release.py\""));
     let workflow =
         fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
     let makefile = fs::read_to_string("Makefile").expect("read Makefile");

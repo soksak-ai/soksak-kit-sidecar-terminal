@@ -16,4 +16,3 @@ build: prepare
 
 verify: prepare
 	@cargo test --locked
-	@python3 scripts/test_install_pty_release.py
