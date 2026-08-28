@@ -1191,9 +1191,6 @@ pub fn run_service(
 ) -> io::Result<()> {
     let (home, runtime_root) = parse_roots(arguments)?;
     let process_label = process_label_from_environment()?;
-    let process_name = sidecar_process_name(&process_label, sidecar_id)?;
-    #[cfg(target_os = "macos")]
-    apply_darwin_process_name(&process_name)?;
     let runtime = Runtime::connect(
         home,
         runtime_root.clone(),
@@ -1221,86 +1218,6 @@ fn process_label_from_environment() -> io::Result<String> {
     soksak_contract_control::parse_process_label(&value)
         .map(str::to_owned)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))
-}
-
-fn sidecar_process_name(label: &str, sidecar_id: &str) -> io::Result<String> {
-    let role = sidecar_id.strip_prefix("soksak-").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "Sidecar id must start with soksak-")
-    })?;
-    soksak_contract_control::format_process_name(label, role)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid Sidecar process name"))
-}
-
-#[cfg(target_os = "macos")]
-static DARWIN_PROCESS_NAME: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
-
-#[cfg(target_os = "macos")]
-#[link(name = "proc")]
-unsafe extern "C" {
-    fn proc_name(pid: i32, buffer: *mut std::ffi::c_void, buffer_size: u32) -> i32;
-}
-
-#[cfg(target_os = "macos")]
-fn current_darwin_process_name(pid: u32) -> io::Result<String> {
-    let mut buffer = [0u8; 1024];
-    // SAFETY: proc_name writes at most buffer.len() bytes to this live byte buffer.
-    let count = unsafe {
-        proc_name(
-            pid as i32,
-            buffer.as_mut_ptr().cast(),
-            buffer.len() as u32,
-        )
-    };
-    if count <= 0 {
-        return Err(io::Error::other(format!("proc_name({pid}) returned {count}")));
-    }
-    std::str::from_utf8(&buffer[..count as usize])
-        .map(str::to_owned)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-#[cfg(target_os = "macos")]
-fn apply_darwin_process_name(process_name: &str) -> io::Result<()> {
-    if process_name.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Darwin process name is empty",
-        ));
-    }
-    let retained = std::ffi::CString::new(process_name)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    if let Some(existing) = DARWIN_PROCESS_NAME.get() {
-        if existing.as_bytes() != retained.as_bytes() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Darwin process name was already set to another label",
-            ));
-        }
-    } else {
-        DARWIN_PROCESS_NAME
-            .set(retained)
-            .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "Darwin process name raced"))?;
-    }
-    let retained = DARWIN_PROCESS_NAME.get().expect("Darwin process name was retained");
-    // SAFETY: setprogname retains this pointer and OnceLock keeps the CString alive until exit.
-    unsafe { libc::setprogname(retained.as_ptr()) };
-    // SAFETY: getprogname returns the pointer retained by setprogname for this process lifetime.
-    let declared = unsafe { std::ffi::CStr::from_ptr(libc::getprogname()) }
-        .to_str()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if declared != process_name {
-        return Err(io::Error::other(format!(
-            "Darwin declared process name = {declared:?}, want {process_name:?}"
-        )));
-    }
-    let actual = current_darwin_process_name(std::process::id())?;
-    let observable = &process_name[..process_name.len().min(31)];
-    if actual != observable {
-        return Err(io::Error::other(format!(
-            "Darwin process name = {actual:?}, want observable prefix {observable:?}"
-        )));
-    }
-    Ok(())
 }
 
 fn parse_roots(arguments: impl IntoIterator<Item = String>) -> io::Result<(PathBuf, PathBuf)> {
@@ -1411,39 +1328,6 @@ impl ServiceClient {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn accepted_process_label_is_published_to_darwin() {
-        let previous = std::env::var_os(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT);
-        // SAFETY: this test owns the one process-label variable for the duration of this assertion;
-        // no production thread is running in this unit-test process.
-        unsafe {
-            std::env::set_var(
-                soksak_contract_control::PROCESS_LABEL_ENVIRONMENT,
-                "soksakv3",
-            );
-        }
-        let accepted = process_label_from_environment().unwrap();
-        let process_name =
-            sidecar_process_name(&accepted, "soksak-sidecar-terminal-alacritty").unwrap();
-        assert_eq!(process_name, "soksakv3-sidecar-terminal-alacritty");
-        apply_darwin_process_name(&process_name).unwrap();
-        match previous {
-            Some(value) => unsafe {
-                std::env::set_var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT, value)
-            },
-            None => unsafe {
-                std::env::remove_var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT)
-            },
-        }
-
-        let actual = current_darwin_process_name(std::process::id()).unwrap();
-        assert_eq!(
-            actual, "soksakv3-sidecar-terminal-alacr",
-            "Darwin process name did not publish the project and Sidecar role"
-        );
-    }
-
     #[test]
     fn a_replacing_session_keeps_the_arcs_a_render_thread_waits_on() {
         let mirror_a: SharedMirror = Arc::new(Mutex::new(Box::new(PaintMirror { paint: Vec::new() })));
