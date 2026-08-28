@@ -12,18 +12,6 @@ validates it once, and publishes it in the protocol-2 announcement and greeting.
 public process inventory and monitoring only; it does not change component identity, sockets,
 dependencies, ownership, or the operating system's executable-derived process name.
 
-Terminal-sidecar owner gates install `soksak-sidecar-pty@0.0.6` through
-`scripts/install_pty_release.py`. The installer accepts an explicit release target, verifies the
-owner release identity, source commit, artifact size and SHA-256, and extracts regular files only.
-`release.json` names each artifact by bare `file`; the installer downloads
-`https://github.com/soksak-ai/soksak-sidecar-pty/releases/download/v0.0.6/<file>` and refuses a
-document that carries a `url` key. It never discovers a Core checkout or builds a PTY provider from
-source.
-
-The pinned `soksak-sidecar-pty@0.0.6` was published with `url` keys in its release document, so the
-installer refuses it; the pin moves to the first PTY release published without `url` (0.0.8 or later),
-and until then the owner gate that installs the PTY fails by that refusal.
-
 Live handoff snapshots publish mirror paint and its absolute PTY output sequence atomically. A
 snapshot can therefore be followed by `pty.attachLease` without replaying or dropping bytes.
 Checkpoint commits are serialized per pane across threads and processes. Their
