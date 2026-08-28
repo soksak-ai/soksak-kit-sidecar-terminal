@@ -52,8 +52,6 @@ struct PaneControl {
 struct OverlayState {
     offset: usize,
     preedit: Option<(String, usize)>,
-    resize: Option<(u32, u32, f64)>,
-    palette: Option<Palette>,
 }
 
 struct FontChoice {
@@ -311,9 +309,6 @@ impl SurfaceSessions {
             .get(&pane)
             .ok_or_else(|| refuse("NOT_FOUND", format!("no surface renders {pane}")))?;
         let canvas = self.canvas()?;
-        let metrics = canvas
-            .font_metrics(&font.family, font.pt, scale)
-            .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
         let (painter, ring, (cols, rows)) = prepare_render(
             &canvas, &font.family, font.pt, scale, pixel_w, pixel_h, font.palette.clone(),
         )
