@@ -175,8 +175,8 @@ fn engine_blink_state_schedules_a_cursor_frame_without_output_polling() {
         grid.cursor_style = TerminalCursorStyle {
             shape: TerminalCursorShape::Bar,
             blinking: true,
-            blink_interval_ms: 20,
         };
+        grid.cursor_animation.interval_ms = 20;
     }
     open_and_receive(&bench);
     let (frame, _) = bench

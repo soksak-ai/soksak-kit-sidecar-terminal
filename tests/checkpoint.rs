@@ -3,7 +3,8 @@ use std::sync::{Arc, Barrier};
 
 use soksak_kit_sidecar_terminal::checkpoint::CheckpointStore;
 use soksak_kit_sidecar_terminal::mirror::{
-    TerminalCursorShape, TerminalCursorStyle, TerminalFrame, TerminalModes,
+    TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle, TerminalFrame,
+    TerminalModes,
 };
 
 fn key() -> [u8; 32] {
@@ -16,11 +17,8 @@ fn frame() -> TerminalFrame {
         rows: 24,
         cursor: (0, 0),
         cursor_visible: true,
-        cursor_style: TerminalCursorStyle {
-            shape: TerminalCursorShape::Block,
-            blinking: false,
-            blink_interval_ms: 750,
-        },
+        cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
+        cursor_animation: TerminalCursorAnimation { interval_ms: 750 },
         alt_active: false,
         history_size: 0,
         offset: 0,

@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use soksak_kit_sidecar_terminal::mirror::{
-    MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorShape, TerminalCursorStyle,
-    TerminalFrame, TerminalModes,
+    MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorAnimation,
+    TerminalCursorShape, TerminalCursorStyle, TerminalFrame, TerminalModes,
 };
 use soksak_kit_sidecar_terminal::render::instances::{pack_bgra, Palette};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
@@ -34,6 +34,7 @@ pub struct GridMirror {
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
     pub cursor_style: TerminalCursorStyle,
+    pub cursor_animation: TerminalCursorAnimation,
 }
 
 impl GridMirror {
@@ -66,11 +67,8 @@ impl GridMirror {
             grid,
             cursor: (0, 0),
             cursor_visible: false,
-            cursor_style: TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            },
+            cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
+            cursor_animation: TerminalCursorAnimation { interval_ms: 750 },
         }
     }
 }
@@ -91,6 +89,7 @@ impl TerminalStateMirror for GridMirror {
             cursor: self.cursor,
             cursor_visible: self.cursor_visible,
             cursor_style: self.cursor_style(),
+            cursor_animation: self.cursor_animation(),
             alt_active: false,
             history_size: 0,
             offset,
@@ -124,6 +123,9 @@ impl TerminalStateMirror for GridMirror {
     }
     fn cursor_style(&self) -> TerminalCursorStyle {
         self.cursor_style
+    }
+    fn cursor_animation(&self) -> TerminalCursorAnimation {
+        self.cursor_animation
     }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         if line < 0 {
@@ -210,6 +212,9 @@ impl TerminalStateMirror for SharedGrid {
     }
     fn cursor_style(&self) -> TerminalCursorStyle {
         self.0.lock().unwrap().cursor_style()
+    }
+    fn cursor_animation(&self) -> TerminalCursorAnimation {
+        self.0.lock().unwrap().cursor_animation()
     }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         self.0.lock().unwrap().line_cells(line)

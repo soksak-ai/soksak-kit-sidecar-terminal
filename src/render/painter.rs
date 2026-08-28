@@ -305,7 +305,6 @@ impl Painter {
             preedit_cursor.map(|col| (col, crate::mirror::TerminalCursorStyle {
                 shape: crate::mirror::TerminalCursorShape::Bar,
                 blinking: false,
-                blink_interval_ms: 0,
             }))
         }) {
             if col < instances.len() {

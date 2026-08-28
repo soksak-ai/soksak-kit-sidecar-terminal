@@ -175,6 +175,7 @@ pub struct FrameReply {
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
     pub cursor_style: crate::mirror::TerminalCursorStyle,
+    pub cursor_animation: crate::mirror::TerminalCursorAnimation,
     pub alt_active: bool,
     pub history_size: usize,
     pub offset: usize,
@@ -192,6 +193,7 @@ impl FrameReply {
             cursor: frame.cursor,
             cursor_visible: frame.cursor_visible,
             cursor_style: frame.cursor_style,
+            cursor_animation: frame.cursor_animation,
             alt_active: frame.alt_active,
             history_size: frame.history_size,
             offset: frame.offset,
@@ -302,7 +304,9 @@ impl FrameSubscribers {
 mod tests {
     use super::*;
     use crate::mirror::{RecoveryMirror, TerminalEngine};
-    use crate::mirror::{TerminalCursorShape, TerminalCursorStyle};
+    use crate::mirror::{
+        TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle,
+    };
 
     fn cell(ch: char) -> TerminalCell {
         TerminalCell {
@@ -338,11 +342,8 @@ mod tests {
             rows: rows.len() as u16,
             cursor: (0, 0),
             cursor_visible: true,
-            cursor_style: TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            },
+            cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
+            cursor_animation: TerminalCursorAnimation { interval_ms: 750 },
             alt_active: false,
             history_size: 0,
             offset: 0,
@@ -549,11 +550,10 @@ mod tests {
             )
         }
         fn cursor_style(&self) -> TerminalCursorStyle {
-            TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            }
+            TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false }
+        }
+        fn cursor_animation(&self) -> TerminalCursorAnimation {
+            TerminalCursorAnimation { interval_ms: 750 }
         }
         fn alt_active(&self) -> bool {
             false

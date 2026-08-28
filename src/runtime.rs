@@ -1334,8 +1334,8 @@ mod tests {
 
     use super::*;
     use crate::mirror::{
-        FrameLine, FrameRun, TerminalCursorShape, TerminalCursorStyle, TerminalFrame,
-        TerminalModes,
+        FrameLine, FrameRun, TerminalCursorAnimation, TerminalCursorShape,
+        TerminalCursorStyle, TerminalFrame, TerminalModes,
     };
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1386,11 +1386,8 @@ mod tests {
             rows: 1,
             cursor: (0, 0),
             cursor_visible: true,
-            cursor_style: TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            },
+            cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
+            cursor_animation: TerminalCursorAnimation { interval_ms: 750 },
             alt_active: alt,
             history_size: history,
             offset,
@@ -1456,11 +1453,10 @@ mod tests {
             (0, 0)
         }
         fn cursor_style(&self) -> TerminalCursorStyle {
-            TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            }
+            TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false }
+        }
+        fn cursor_animation(&self) -> TerminalCursorAnimation {
+            TerminalCursorAnimation { interval_ms: 750 }
         }
         fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
             Vec::new()
@@ -1516,11 +1512,10 @@ mod tests {
             (0, 0)
         }
         fn cursor_style(&self) -> TerminalCursorStyle {
-            TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            }
+            TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false }
+        }
+        fn cursor_animation(&self) -> TerminalCursorAnimation {
+            TerminalCursorAnimation { interval_ms: 750 }
         }
         fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
             Vec::new()
@@ -1568,11 +1563,10 @@ mod tests {
             (0, 0)
         }
         fn cursor_style(&self) -> TerminalCursorStyle {
-            TerminalCursorStyle {
-                shape: TerminalCursorShape::Block,
-                blinking: false,
-                blink_interval_ms: 750,
-            }
+            TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false }
+        }
+        fn cursor_animation(&self) -> TerminalCursorAnimation {
+            TerminalCursorAnimation { interval_ms: 750 }
         }
         fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
             Vec::new()

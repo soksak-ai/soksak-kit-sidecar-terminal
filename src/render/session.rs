@@ -16,7 +16,7 @@ use super::instances::{pack_bgra, Palette};
 use super::native::Canvas;
 use super::painter::{Painter, Preedit};
 use super::surface_ring::SurfaceRing;
-use crate::mirror::TerminalCursorStyle;
+use crate::mirror::{TerminalCursorAnimation, TerminalCursorStyle};
 use crate::TerminalStateMirror;
 
 pub type SharedMirror = Arc<Mutex<Box<dyn TerminalStateMirror>>>;
@@ -72,13 +72,19 @@ impl CursorAnimation {
         Self { active: false, on: true, interval: Duration::ZERO }
     }
 
-    fn observe(&mut self, style: TerminalCursorStyle, visible: bool, activity: bool) {
-        let active = visible && style.blinking && style.blink_interval_ms > 0;
+    fn observe(
+        &mut self,
+        style: TerminalCursorStyle,
+        policy: TerminalCursorAnimation,
+        visible: bool,
+        activity: bool,
+    ) {
+        let active = visible && style.blinking && policy.interval_ms > 0;
         if activity || active != self.active {
             self.on = true;
         }
         self.active = active;
-        self.interval = Duration::from_millis(style.blink_interval_ms as u64);
+        self.interval = Duration::from_millis(policy.interval_ms as u64);
     }
 
     fn next_tick(&self) -> Option<Duration> {
@@ -639,8 +645,10 @@ fn spawn_render_thread(
                     let cursor = mirror.cursor();
                     let visible = mirror.modes().show_cursor;
                     let style = mirror.cursor_style();
+                    let policy = mirror.cursor_animation();
                     cursor_animation.observe(
                         style,
+                        policy,
                         visible && offset == 0 && preedit_value.is_none(),
                         output_activity,
                     );

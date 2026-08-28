@@ -248,20 +248,20 @@ mod tests {
         let theme = palette();
         let mut block = row_instances(&[plain('x')], 12, &theme, &mut |_| Some(slot()))[0];
         apply_cursor(&mut block, TerminalCursorStyle {
-            shape: TerminalCursorShape::Block, blinking: false, blink_interval_ms: 750,
+            shape: TerminalCursorShape::Block, blinking: false,
         }, &theme);
         assert_eq!((block.fg, block.bg), (theme.cursor_accent, theme.cursor));
 
         let mut underline = block;
         apply_cursor(&mut underline, TerminalCursorStyle {
-            shape: TerminalCursorShape::Underline, blinking: false, blink_interval_ms: 750,
+            shape: TerminalCursorShape::Underline, blinking: false,
         }, &theme);
         assert_ne!(underline.flags & FLAG_CURSOR_UNDERLINE, 0);
         assert_eq!(underline.reserved, theme.cursor);
 
         let mut bar = block;
         apply_cursor(&mut bar, TerminalCursorStyle {
-            shape: TerminalCursorShape::Bar, blinking: true, blink_interval_ms: 750,
+            shape: TerminalCursorShape::Bar, blinking: true,
         }, &theme);
         assert_ne!(bar.flags & FLAG_CURSOR_BAR, 0);
         assert_eq!(bar.reserved, theme.cursor);

@@ -21,9 +21,15 @@ pub enum TerminalCursorShape {
 pub struct TerminalCursorStyle {
     pub shape: TerminalCursorShape,
     pub blinking: bool,
-    /// Renderer policy selected by this provider. Zero means the provider has
-    /// no animation interval and therefore cannot schedule blinking.
-    pub blink_interval_ms: u32,
+}
+
+/// Provider/user configuration for animating a blinking terminal cursor. It
+/// is deliberately separate from DECSCUSR state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalCursorAnimation {
+    /// Zero means this provider has no configured animation interval.
+    pub interval_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -83,6 +89,7 @@ pub trait TerminalEngine: Send + Sized {
     fn rows(&self) -> u16;
     fn cursor(&self) -> (usize, usize);
     fn cursor_style(&self) -> TerminalCursorStyle;
+    fn cursor_animation(&self) -> TerminalCursorAnimation;
     fn alt_active(&self) -> bool;
     fn history_size(&self) -> usize;
     fn modes(&self) -> TerminalModes;
@@ -118,6 +125,7 @@ pub struct TerminalFrame {
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
     pub cursor_style: TerminalCursorStyle,
+    pub cursor_animation: TerminalCursorAnimation,
     pub alt_active: bool,
     pub history_size: usize,
     pub offset: usize,
@@ -268,6 +276,9 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
     pub fn cursor_style(&self) -> TerminalCursorStyle {
         self.engine.cursor_style()
     }
+    pub fn cursor_animation(&self) -> TerminalCursorAnimation {
+        self.engine.cursor_animation()
+    }
     pub fn modes(&self) -> TerminalModes {
         self.engine.modes()
     }
@@ -305,6 +316,7 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
             cursor: self.engine.cursor(),
             cursor_visible: modes.show_cursor,
             cursor_style: self.engine.cursor_style(),
+            cursor_animation: self.engine.cursor_animation(),
             alt_active,
             history_size,
             offset,
@@ -578,11 +590,10 @@ mod tests {
             (0, 0)
         }
         fn cursor_style(&self) -> TerminalCursorStyle {
-            TerminalCursorStyle {
-                shape: TerminalCursorShape::Bar,
-                blinking: false,
-                blink_interval_ms: 750,
-            }
+            TerminalCursorStyle { shape: TerminalCursorShape::Bar, blinking: false }
+        }
+        fn cursor_animation(&self) -> TerminalCursorAnimation {
+            TerminalCursorAnimation { interval_ms: 750 }
         }
         fn alt_active(&self) -> bool {
             false
