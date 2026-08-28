@@ -810,27 +810,29 @@ mod tests {
 
     #[test]
     fn cursor_animation_ticks_only_for_engine_blinking_state() {
-        use crate::mirror::{TerminalCursorShape, TerminalCursorStyle};
+        use crate::mirror::{
+            TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle,
+        };
 
         let steady = TerminalCursorStyle {
             shape: TerminalCursorShape::Bar,
             blinking: false,
-            blink_interval_ms: 750,
         };
         let blinking = TerminalCursorStyle { blinking: true, ..steady };
+        let policy = TerminalCursorAnimation { interval_ms: 750 };
         let mut animation = CursorAnimation::new();
-        animation.observe(steady, true, true);
+        animation.observe(steady, policy, true, true);
         assert_eq!(animation.next_tick(), None);
         assert!(animation.cursor_on());
 
-        animation.observe(blinking, true, true);
+        animation.observe(blinking, policy, true, true);
         assert_eq!(animation.next_tick(), Some(Duration::from_millis(750)));
         assert!(animation.tick());
         assert!(!animation.cursor_on());
         assert!(animation.tick());
         assert!(animation.cursor_on());
 
-        animation.observe(blinking, false, false);
+        animation.observe(blinking, policy, false, false);
         assert_eq!(animation.next_tick(), None);
     }
 }
