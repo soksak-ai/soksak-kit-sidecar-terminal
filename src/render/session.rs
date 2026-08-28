@@ -289,13 +289,7 @@ impl SurfaceSessions {
             acquire_misses: AtomicU64::new(0),
             last_error: Mutex::new(None),
         });
-        {
-            let mut panes = self.panes.lock().unwrap();
-            if panes.contains_key(&pane) {
-                return Err(refuse("ALREADY_OPEN", format!("{pane} already renders")));
-            }
-            panes.insert(pane.clone(), Arc::clone(&control));
-        }
+        supersede(&self.panes, &pane, Arc::clone(&control));
         self.fonts
             .lock()
             .unwrap()
@@ -690,4 +684,57 @@ fn spans(rows: &[u16]) -> Vec<(u16, u16)> {
         index += 1;
     }
     spans
+}
+
+/// The service is the only opener. A second open for the same pane is a newer
+/// world — a dead application's render session never sends close, so the
+/// replacement supersedes it and the old thread is stopped, never a refusal.
+fn supersede(
+    panes: &Mutex<HashMap<String, Arc<PaneControl>>>,
+    pane: &str,
+    control: Arc<PaneControl>,
+) -> Option<Arc<PaneControl>> {
+    let previous = panes.lock().unwrap().insert(pane.to_string(), control);
+    if let Some(previous) = &previous {
+        previous.stop.store(true, Ordering::Release);
+        previous.wake();
+    }
+    previous
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn control(pane: &str) -> Arc<PaneControl> {
+        Arc::new(PaneControl {
+            pane: pane.to_string(),
+            stop: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            dirty: AtomicBool::new(false),
+            overlay: Mutex::new(OverlayState::default()),
+            returns: Mutex::new(Vec::new()),
+            signal: Arc::new((Mutex::new(0), Condvar::new())),
+            pending: Mutex::new(None),
+            paints: AtomicU64::new(0),
+            sends: AtomicU64::new(0),
+            acquire_misses: AtomicU64::new(0),
+            last_error: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn a_reopened_pane_supersedes_the_dead_render_session() {
+        let panes = Mutex::new(HashMap::new());
+        let first = control("tab-a.1");
+        let second = control("tab-a.1");
+
+        assert!(supersede(&panes, "tab-a.1", Arc::clone(&first)).is_none());
+        let superseded = supersede(&panes, "tab-a.1", Arc::clone(&second))
+            .expect("the first session is handed back");
+        assert!(Arc::ptr_eq(&superseded, &first));
+        assert!(first.stop.load(Ordering::Acquire), "the old thread is told to stop");
+        assert!(!second.stop.load(Ordering::Acquire));
+        assert!(Arc::ptr_eq(panes.lock().unwrap().get("tab-a.1").unwrap(), &second));
+    }
 }
