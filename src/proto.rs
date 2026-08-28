@@ -17,16 +17,16 @@ pub const OBSERVATION_FRAME_RESIZE: u8 = 2;
 pub const OBSERVATION_FRAME_END: u8 = 3;
 pub const OBSERVATION_FRAME_OPENED: u8 = 4;
 
-pub fn pty_socket_path(runtime_root: &Path) -> String {
+pub fn pty_socket_path(runtime_root: &Path, sidecar_name: &str) -> String {
     soksak_contract_control::address(
         runtime_root,
-        &format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}"),
+        &format!("{sidecar_name}-p{PTY_PROTOCOL_VERSION}"),
         cfg!(windows),
     )
 }
 
-pub fn pty_token_path(runtime_root: &Path) -> PathBuf {
-    runtime_root.join(format!("{PTY_SIDECAR_NAME}-p{PTY_PROTOCOL_VERSION}.token"))
+pub fn pty_token_path(runtime_root: &Path, sidecar_name: &str) -> PathBuf {
+    runtime_root.join(format!("{sidecar_name}-p{PTY_PROTOCOL_VERSION}.token"))
 }
 
 pub fn service_socket_path(runtime_root: &Path, sidecar_id: &str) -> String {
@@ -67,7 +67,7 @@ mod tests {
     fn endpoints_name_the_installed_sidecars() {
         let runtime = Path::new("/runtime");
         assert_eq!(
-            pty_socket_path(runtime),
+            pty_socket_path(runtime, PTY_SIDECAR_NAME),
             "/runtime/soksak-sidecar-pty-p1.sock"
         );
         assert_eq!(

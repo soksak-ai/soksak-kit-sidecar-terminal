@@ -38,14 +38,15 @@ fn serve(listener: UnixListener, rounds: usize) -> std::thread::JoinHandle<()> {
 }
 
 fn stage(root: &Path) -> UnixListener {
-    std::fs::write(soksak_kit_sidecar_terminal::proto::pty_token_path(root), "token\n").expect("token");
-    UnixListener::bind(soksak_kit_sidecar_terminal::proto::pty_socket_path(root)).expect("bind")
+    std::fs::write(soksak_kit_sidecar_terminal::proto::pty_token_path(root, "soksak-sidecar-pty"), "token\n").expect("token");
+    UnixListener::bind(soksak_kit_sidecar_terminal::proto::pty_socket_path(root, "soksak-sidecar-pty")).expect("bind")
 }
 
 // A request on a connection the unit already ended is not a failure to hand back: the unit is there,
 // the connection is not, and the request reaches it by connecting again.
 #[test]
 fn a_request_on_an_ended_connection_reaches_the_unit_again() {
+    unsafe { std::env::set_var("SOKSAK_SIDECAR_NAME", "soksak-sidecar-pty"); }
     let home = std::env::temp_dir().join(format!("soksak-reconnect-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("home");

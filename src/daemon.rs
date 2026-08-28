@@ -27,8 +27,13 @@ fn other(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
 
+fn sidecar_name() -> io::Result<String> {
+    std::env::var(soksak_contract_control::SIDECAR_NAME_ENVIRONMENT)
+        .map_err(|_| other("PTY sidecar name is not declared"))
+}
+
 fn read_token(runtime_root: &Path) -> io::Result<String> {
-    let path = proto::pty_token_path(runtime_root);
+    let path = proto::pty_token_path(runtime_root, &sidecar_name()?);
     let token = std::fs::read_to_string(&path).map_err(|error| {
         other(format!(
             "PTY token unreadable at {}: {error}",
@@ -43,7 +48,8 @@ fn read_token(runtime_root: &Path) -> io::Result<String> {
 }
 
 fn connect(runtime_root: &Path) -> io::Result<(RecvHalf, SendHalf)> {
-    let path = proto::pty_socket_path(runtime_root);
+    let name = sidecar_name()?;
+    let path = proto::pty_socket_path(runtime_root, &name);
     let name = crate::transport_name::local_name(&path)?;
     Stream::connect(name)
         .map_err(|error| other(format!("cannot reach PTY socket {}: {error}", path)))
