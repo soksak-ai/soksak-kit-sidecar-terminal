@@ -1215,9 +1215,74 @@ pub fn run_service(
 fn process_label_from_environment() -> io::Result<String> {
     let value = std::env::var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT)
         .unwrap_or_else(|_| soksak_contract_control::DEFAULT_PROCESS_LABEL.to_string());
-    soksak_contract_control::parse_process_label(&value)
+    let label = soksak_contract_control::parse_process_label(&value)
         .map(str::to_owned)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))?;
+    #[cfg(target_os = "macos")]
+    apply_darwin_process_name(&label)?;
+    Ok(label)
+}
+
+#[cfg(target_os = "macos")]
+static DARWIN_PROCESS_NAME: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_name(pid: i32, buffer: *mut std::ffi::c_void, buffer_size: u32) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+fn current_darwin_process_name(pid: u32) -> io::Result<String> {
+    let mut buffer = [0u8; 1024];
+    // SAFETY: proc_name writes at most buffer.len() bytes to this live byte buffer.
+    let count = unsafe {
+        proc_name(
+            pid as i32,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    if count <= 0 {
+        return Err(io::Error::other(format!("proc_name({pid}) returned {count}")));
+    }
+    std::str::from_utf8(&buffer[..count as usize])
+        .map(str::to_owned)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "macos")]
+fn apply_darwin_process_name(label: &str) -> io::Result<()> {
+    if label.is_empty() || label.len() > 31 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Darwin process label has {} bytes; want 1 through 31", label.len()),
+        ));
+    }
+    let retained = std::ffi::CString::new(label)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if let Some(existing) = DARWIN_PROCESS_NAME.get() {
+        if existing.as_bytes() != retained.as_bytes() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Darwin process name was already set to another label",
+            ));
+        }
+    } else {
+        DARWIN_PROCESS_NAME
+            .set(retained)
+            .map_err(|_| io::Error::new(io::ErrorKind::AlreadyExists, "Darwin process name raced"))?;
+    }
+    let retained = DARWIN_PROCESS_NAME.get().expect("Darwin process name was retained");
+    // SAFETY: setprogname retains this pointer and OnceLock keeps the CString alive until exit.
+    unsafe { libc::setprogname(retained.as_ptr()) };
+    let actual = current_darwin_process_name(std::process::id())?;
+    if actual != label {
+        return Err(io::Error::other(format!(
+            "Darwin process name = {actual:?}, want {label:?}"
+        )));
+    }
+    Ok(())
 }
 
 fn parse_roots(arguments: impl IntoIterator<Item = String>) -> io::Result<(PathBuf, PathBuf)> {
@@ -1329,12 +1394,6 @@ impl ServiceClient {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "macos")]
-    #[link(name = "proc")]
-    unsafe extern "C" {
-        fn proc_name(pid: i32, buffer: *mut std::ffi::c_void, buffer_size: u32) -> i32;
-    }
-
-    #[cfg(target_os = "macos")]
     #[test]
     fn accepted_process_label_is_published_to_darwin() {
         let previous = std::env::var_os(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT);
@@ -1356,17 +1415,7 @@ mod tests {
             },
         }
 
-        let mut buffer = [0u8; 1024];
-        // SAFETY: proc_name writes at most buffer.len() bytes to this live byte buffer.
-        let count = unsafe {
-            proc_name(
-                std::process::id() as i32,
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-            )
-        };
-        assert!(count > 0, "proc_name returned {count}");
-        let actual = std::str::from_utf8(&buffer[..count as usize]).unwrap();
+        let actual = current_darwin_process_name(std::process::id()).unwrap();
         assert_eq!(actual, accepted, "Darwin process name did not publish the accepted label");
     }
 

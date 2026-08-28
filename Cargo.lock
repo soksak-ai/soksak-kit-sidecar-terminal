@@ -331,8 +331,8 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "soksak-contract-control"
-version = "0.0.2"
-source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=9c04b11819a7bee521368ad446ac196a5370d071#9c04b11819a7bee521368ad446ac196a5370d071"
+version = "0.0.3"
+source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=44c52e0e5436366da9185d74bac11abb4c426946#44c52e0e5436366da9185d74bac11abb4c426946"
 dependencies = [
  "serde",
  "sha2",
@@ -352,6 +352,7 @@ dependencies = [
  "cc",
  "getrandom 0.3.4",
  "interprocess",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
