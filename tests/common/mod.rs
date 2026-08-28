@@ -223,6 +223,9 @@ impl TerminalStateMirror for SharedGrid {
     fn cursor_animation(&self) -> TerminalCursorAnimation {
         self.0.lock().unwrap().cursor_animation()
     }
+    fn theme_overrides(&self) -> TerminalThemeOverrides {
+        self.0.lock().unwrap().theme_overrides()
+    }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         self.0.lock().unwrap().line_cells(line)
     }

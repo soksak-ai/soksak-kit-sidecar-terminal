@@ -9,7 +9,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use common::{GridMirror, SharedGrid};
 use serde_json::json;
 use soksak_contract_surface::Message;
-use soksak_kit_sidecar_terminal::mirror::{TerminalCursorShape, TerminalCursorStyle};
+use soksak_kit_sidecar_terminal::mirror::{
+    TerminalCursorShape, TerminalCursorStyle, TerminalRgb,
+};
 use soksak_kit_sidecar_terminal::render::channel::ChannelHost;
 use soksak_kit_sidecar_terminal::render::session::{FrameSignal, SharedMirror, SurfaceSessions};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
@@ -195,4 +197,23 @@ fn engine_blink_state_schedules_a_cursor_frame_without_output_polling() {
             None,
         )
         .expect("close lands");
+}
+
+#[test]
+fn applied_override_frame_updates_surface_theme_state() {
+    let bench = bench("theme");
+    open_and_receive(&bench);
+    bench.grid.lock().unwrap().theme_overrides.foreground =
+        Some(TerminalRgb { r: 0xab, g: 0xcd, b: 0xef });
+    progressed(&bench);
+    let (frame, _) = bench.host.recv(2000).expect("host answers").expect("theme frame arrives");
+    assert!(matches!(frame, Message::FrameReady { .. }));
+    let state = bench.sessions.command(
+        "soksak-sidecar-terminal-test",
+        "surface.state",
+        &json!({"pane": "tab-test.1"}),
+        None,
+    ).expect("state answers");
+    assert_eq!(state["terminalOverrides"]["foreground"], "#abcdef");
+    assert_eq!(state["effectiveTheme"]["foreground"], "#abcdef");
 }
