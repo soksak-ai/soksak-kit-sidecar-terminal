@@ -1609,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_same_generations_screen_stands_back_up() {
+    fn same_generation_resumes_and_new_generation_parks_history() {
         let home = test_root("checkpoint-archive-");
         let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [7; 32]).unwrap();
         store
@@ -1631,10 +1631,14 @@ mod tests {
         expected.extend_from_slice(b"fresh-shell");
         assert_eq!(restored.lock().unwrap().rehydrate(), expected);
 
-        // Another generation is another shell: a dead shell's screen is never
-        // replayed under a fresh prompt.
+        // Another generation is another shell. Its old viewport becomes history,
+        // then the new shell owns a cleared home cursor instead of inheriting the old one.
         let fresh = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(5));
-        assert!(fresh.lock().unwrap().rehydrate().is_empty());
+        fresh.lock().unwrap().feed(b"fresh-shell");
+        let mut parked = b"archived-screen\n".to_vec();
+        parked.extend_from_slice(&b"\r\n".repeat(24));
+        parked.extend_from_slice(b"\x1b[2J\x1b[Hfresh-shell");
+        assert_eq!(fresh.lock().unwrap().rehydrate(), parked);
 
         // No expectation asks for nothing.
         let bare = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, None);
