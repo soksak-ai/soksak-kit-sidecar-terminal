@@ -805,6 +805,19 @@ mod tests {
     }
 
     #[test]
+    fn surface_state_exposes_the_engine_cursor_and_renderer_animation() {
+        let sessions = SurfaceSessions::new();
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
+        let state = sessions.state(&json!({ "pane": "tab-a.1" })).expect("surface state");
+        assert!(state["cursorShape"].is_string(), "cursor shape is not public: {state}");
+        assert!(state["cursorBlinking"].is_boolean(), "cursor blink is not public: {state}");
+        assert!(state["cursorVisible"].is_boolean(), "cursor visibility is not public: {state}");
+        assert!(state["cursorRow"].is_u64() && state["cursorColumn"].is_u64(), "cursor position is not public: {state}");
+        assert!(state["cursorAnimation"]["intervalMs"].is_u64(), "cursor animation interval is not public: {state}");
+        assert!(state["cursorAnimation"]["phase"].is_string(), "cursor animation phase is not public: {state}");
+    }
+
+    #[test]
     fn terminal_theme_keeps_the_declared_cursor_colors() {
         let theme = json!({
             "fg": "#112233", "bg": "#445566", "cursor": "#778899",
