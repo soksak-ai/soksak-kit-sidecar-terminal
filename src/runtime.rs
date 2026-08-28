@@ -1328,6 +1328,48 @@ impl ServiceClient {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[link(name = "proc")]
+    unsafe extern "C" {
+        fn proc_name(pid: i32, buffer: *mut std::ffi::c_void, buffer_size: u32) -> i32;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn accepted_process_label_is_published_to_darwin() {
+        let previous = std::env::var_os(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT);
+        // SAFETY: this test owns the one process-label variable for the duration of this assertion;
+        // no production thread is running in this unit-test process.
+        unsafe {
+            std::env::set_var(
+                soksak_contract_control::PROCESS_LABEL_ENVIRONMENT,
+                "soksakv3",
+            );
+        }
+        let accepted = process_label_from_environment().unwrap();
+        match previous {
+            Some(value) => unsafe {
+                std::env::set_var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT, value)
+            },
+            None => unsafe {
+                std::env::remove_var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT)
+            },
+        }
+
+        let mut buffer = [0u8; 1024];
+        // SAFETY: proc_name writes at most buffer.len() bytes to this live byte buffer.
+        let count = unsafe {
+            proc_name(
+                std::process::id() as i32,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+            )
+        };
+        assert!(count > 0, "proc_name returned {count}");
+        let actual = std::str::from_utf8(&buffer[..count as usize]).unwrap();
+        assert_eq!(actual, accepted, "Darwin process name did not publish the accepted label");
+    }
+
     #[test]
     fn a_replacing_session_keeps_the_arcs_a_render_thread_waits_on() {
         let mirror_a: SharedMirror = Arc::new(Mutex::new(Box::new(PaintMirror { paint: Vec::new() })));
