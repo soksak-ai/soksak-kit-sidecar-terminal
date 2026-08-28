@@ -540,6 +540,9 @@ mod tests {
         fn cursor(&self) -> (usize, usize) {
             (0, 0)
         }
+        fn cursor_style(&self) -> TerminalCursorStyle {
+            TerminalCursorStyle { shape: TerminalCursorShape::Bar, blinking: false }
+        }
         fn alt_active(&self) -> bool {
             false
         }
@@ -567,7 +570,13 @@ mod tests {
         let value = serde_json::to_value(frame).unwrap();
         assert_eq!(value["cursorVisible"], serde_json::Value::Bool(false));
         assert_eq!(value["modes"]["showCursor"], serde_json::Value::Bool(false));
+        assert_eq!(value["cursorStyle"]["shape"], serde_json::Value::String("bar".into()));
+        assert_eq!(value["cursorStyle"]["blinking"], serde_json::Value::Bool(false));
         assert!(value.get("cursor_visible").is_none());
+        assert!(RecoveryMirror::<HiddenCursorEngine>::new(1, 1)
+            .rehydrate()
+            .windows(b"\x1b[6 q".len())
+            .any(|bytes| bytes == b"\x1b[6 q"));
     }
 
     #[test]

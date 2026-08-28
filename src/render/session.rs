@@ -737,4 +737,16 @@ mod tests {
         assert!(!second.stop.load(Ordering::Acquire));
         assert!(Arc::ptr_eq(panes.lock().unwrap().get("tab-a.1").unwrap(), &second));
     }
+
+    #[test]
+    fn terminal_theme_keeps_the_declared_cursor_colors() {
+        let theme = json!({
+            "fg": "#112233", "bg": "#445566", "cursor": "#778899",
+            "cursorAccent": "#aabbcc", "selectionBg": "#000000",
+            "selectionFg": "#ffffff", "ansi": vec!["#010203"; 256],
+        });
+        let palette = parse_theme(&theme).expect("complete theme");
+        assert_eq!(palette.cursor, pack_bgra(0x77, 0x88, 0x99, 255));
+        assert_eq!(palette.cursor_accent, pack_bgra(0xaa, 0xbb, 0xcc, 255));
+    }
 }
