@@ -988,6 +988,28 @@ mod tests {
     }
 
     #[test]
+    fn terminal_override_wins_and_reset_reveals_the_current_base() {
+        let sessions = SurfaceSessions::new();
+        let control = control("tab-a.1");
+        {
+            let mut theme = control.theme.lock().unwrap();
+            theme.overrides.foreground = Some(TerminalRgb { r: 0xab, g: 0xcd, b: 0xef });
+        }
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), Arc::clone(&control));
+        let overridden = sessions.state(&json!({ "pane": "tab-a.1" })).expect("overridden state");
+        assert_eq!(overridden["terminalOverrides"]["foreground"], "#abcdef");
+        assert_eq!(overridden["effectiveTheme"]["foreground"], "#abcdef");
+
+        {
+            let mut theme = control.theme.lock().unwrap();
+            theme.base.fg = pack_bgra(0x22, 0x22, 0x22, 255);
+            theme.overrides.foreground = None;
+        }
+        let reset = sessions.state(&json!({ "pane": "tab-a.1" })).expect("reset state");
+        assert_eq!(reset["effectiveTheme"]["foreground"], "#222222");
+    }
+
+    #[test]
     fn terminal_theme_keeps_the_declared_cursor_colors() {
         let theme = json!({
             "mode": "dark",
