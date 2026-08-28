@@ -1191,6 +1191,9 @@ pub fn run_service(
 ) -> io::Result<()> {
     let (home, runtime_root) = parse_roots(arguments)?;
     let process_label = process_label_from_environment()?;
+    let process_name = sidecar_process_name(&process_label, sidecar_id)?;
+    #[cfg(target_os = "macos")]
+    apply_darwin_process_name(&process_name)?;
     let runtime = Runtime::connect(
         home,
         runtime_root.clone(),
@@ -1215,12 +1218,17 @@ pub fn run_service(
 fn process_label_from_environment() -> io::Result<String> {
     let value = std::env::var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT)
         .unwrap_or_else(|_| soksak_contract_control::DEFAULT_PROCESS_LABEL.to_string());
-    let label = soksak_contract_control::parse_process_label(&value)
+    soksak_contract_control::parse_process_label(&value)
         .map(str::to_owned)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))?;
-    #[cfg(target_os = "macos")]
-    apply_darwin_process_name(&label)?;
-    Ok(label)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))
+}
+
+fn sidecar_process_name(label: &str, sidecar_id: &str) -> io::Result<String> {
+    let role = sidecar_id.strip_prefix("soksak-").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Sidecar id must start with soksak-")
+    })?;
+    soksak_contract_control::format_process_name(label, role)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid Sidecar process name"))
 }
 
 #[cfg(target_os = "macos")]
@@ -1252,14 +1260,14 @@ fn current_darwin_process_name(pid: u32) -> io::Result<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_darwin_process_name(label: &str) -> io::Result<()> {
-    if label.is_empty() || label.len() > 31 {
+fn apply_darwin_process_name(process_name: &str) -> io::Result<()> {
+    if process_name.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Darwin process label has {} bytes; want 1 through 31", label.len()),
+            "Darwin process name is empty",
         ));
     }
-    let retained = std::ffi::CString::new(label)
+    let retained = std::ffi::CString::new(process_name)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if let Some(existing) = DARWIN_PROCESS_NAME.get() {
         if existing.as_bytes() != retained.as_bytes() {
@@ -1276,10 +1284,20 @@ fn apply_darwin_process_name(label: &str) -> io::Result<()> {
     let retained = DARWIN_PROCESS_NAME.get().expect("Darwin process name was retained");
     // SAFETY: setprogname retains this pointer and OnceLock keeps the CString alive until exit.
     unsafe { libc::setprogname(retained.as_ptr()) };
-    let actual = current_darwin_process_name(std::process::id())?;
-    if actual != label {
+    // SAFETY: getprogname returns the pointer retained by setprogname for this process lifetime.
+    let declared = unsafe { std::ffi::CStr::from_ptr(libc::getprogname()) }
+        .to_str()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if declared != process_name {
         return Err(io::Error::other(format!(
-            "Darwin process name = {actual:?}, want {label:?}"
+            "Darwin declared process name = {declared:?}, want {process_name:?}"
+        )));
+    }
+    let actual = current_darwin_process_name(std::process::id())?;
+    let observable = &process_name[..process_name.len().min(31)];
+    if actual != observable {
+        return Err(io::Error::other(format!(
+            "Darwin process name = {actual:?}, want observable prefix {observable:?}"
         )));
     }
     Ok(())
@@ -1406,6 +1424,10 @@ mod tests {
             );
         }
         let accepted = process_label_from_environment().unwrap();
+        let process_name =
+            sidecar_process_name(&accepted, "soksak-sidecar-terminal-alacritty").unwrap();
+        assert_eq!(process_name, "soksakv3-sidecar-terminal-alacritty");
+        apply_darwin_process_name(&process_name).unwrap();
         match previous {
             Some(value) => unsafe {
                 std::env::set_var(soksak_contract_control::PROCESS_LABEL_ENVIRONMENT, value)
@@ -1417,7 +1439,7 @@ mod tests {
 
         let actual = current_darwin_process_name(std::process::id()).unwrap();
         assert_eq!(
-            actual, "soksakv3-terminal-alacritty",
+            actual, "soksakv3-sidecar-terminal-alacr",
             "Darwin process name did not publish the project and Sidecar role"
         );
     }

@@ -1,6 +1,6 @@
 [package]
 name = "soksak-kit-sidecar-terminal"
-version = "0.0.17"
+version = "0.0.18"
 edition = "2024"
 publish = false
 license = "MIT"
@@ -13,7 +13,7 @@ base64 = "=0.22.1"
 getrandom = "=0.3.4"
 interprocess = "=2.4.2"
 libc = "=0.2.189"
-soksak-contract-control = { git = "https://github.com/soksak-ai/soksak-contract-control", rev = "44c52e0e5436366da9185d74bac11abb4c426946" }
+soksak-contract-control = { git = "https://github.com/soksak-ai/soksak-contract-control", rev = "2dbce68a373cffc5ecdd46de0637bd0722231545" }
 soksak-contract-surface = { git = "https://github.com/soksak-ai/soksak-contract-surface", rev = "e03e3cfeeb1b44c950711b45cd614139af80005d" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
