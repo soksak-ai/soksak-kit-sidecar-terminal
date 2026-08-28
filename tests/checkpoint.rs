@@ -124,6 +124,28 @@ fn older_checkpoint_cannot_replace_a_newer_commit() {
 }
 
 #[test]
+fn a_new_generation_is_selected_by_ownership_not_numeric_magnitude() {
+    let home = std::env::temp_dir().join(format!(
+        "soksak-checkpoint-generation-owner-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&home);
+    let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", key()).unwrap();
+
+    store
+        .write("window-a", "pane-a", u64::MAX - 1, 10, b"old-owner", &frame())
+        .unwrap();
+    store
+        .write("window-a", "pane-a", 7, 1, b"new-owner", &frame())
+        .unwrap();
+
+    let opened = store.read("window-a", "pane-a").unwrap().unwrap();
+    assert_eq!((opened.generation, opened.sequence), (7, 1));
+    assert_eq!(opened.paint, b"new-owner");
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
 fn concurrent_checkpoint_commits_do_not_collide_or_regress() {
     const WRITERS: usize = 16;
     let home = std::env::temp_dir().join(format!(
