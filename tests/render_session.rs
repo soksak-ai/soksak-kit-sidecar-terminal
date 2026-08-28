@@ -35,6 +35,7 @@ fn bench(tag: &str) -> Bench {
 
 fn theme() -> serde_json::Value {
     json!({
+        "mode": "dark",
         "fg": "#e6e6e6", "bg": "#0a0a0a", "cursor": "#ffffff", "cursorAccent": "#000000",
         "selectionBg": "#334455", "selectionFg": "#ffffff",
         "ansi": vec!["#0a0a0a"; 256],

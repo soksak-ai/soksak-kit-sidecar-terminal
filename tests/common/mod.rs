@@ -141,6 +141,7 @@ pub fn palette() -> Palette {
         bg: pack_bgra(10, 10, 10, 255),
         cursor: pack_bgra(240, 240, 240, 255),
         cursor_accent: pack_bgra(12, 12, 12, 255),
+        selection_bg: pack_bgra(60, 60, 60, 255),
         ansi: [pack_bgra(10, 10, 10, 255); 256],
     }
 }

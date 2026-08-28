@@ -8,6 +8,32 @@ pub enum TerminalColor {
     Rgb(u8, u8, u8),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TerminalRgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalThemeOverrides {
+    pub foreground: Option<TerminalRgb>,
+    pub background: Option<TerminalRgb>,
+    pub cursor: Option<TerminalRgb>,
+    pub ansi: [Option<TerminalRgb>; 256],
+}
+
+impl Default for TerminalThemeOverrides {
+    fn default() -> Self {
+        Self {
+            foreground: None,
+            background: None,
+            cursor: None,
+            ansi: [None; 256],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TerminalCursorShape {
@@ -90,6 +116,9 @@ pub trait TerminalEngine: Send + Sized {
     fn cursor(&self) -> (usize, usize);
     fn cursor_style(&self) -> TerminalCursorStyle;
     fn cursor_animation(&self) -> TerminalCursorAnimation;
+    fn theme_overrides(&self) -> TerminalThemeOverrides {
+        TerminalThemeOverrides::default()
+    }
     fn alt_active(&self) -> bool;
     fn history_size(&self) -> usize;
     fn modes(&self) -> TerminalModes;
@@ -278,6 +307,9 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
     }
     pub fn cursor_animation(&self) -> TerminalCursorAnimation {
         self.engine.cursor_animation()
+    }
+    pub fn theme_overrides(&self) -> TerminalThemeOverrides {
+        self.engine.theme_overrides()
     }
     pub fn modes(&self) -> TerminalModes {
         self.engine.modes()

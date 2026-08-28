@@ -16,7 +16,10 @@ use super::instances::{pack_bgra, Palette};
 use super::native::Canvas;
 use super::painter::{Painter, Preedit};
 use super::surface_ring::SurfaceRing;
-use crate::mirror::{TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle};
+use crate::mirror::{
+    TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle, TerminalRgb,
+    TerminalThemeOverrides,
+};
 use crate::TerminalStateMirror;
 
 pub type SharedMirror = Arc<Mutex<Box<dyn TerminalStateMirror>>>;
@@ -54,6 +57,7 @@ struct PaneControl {
     cursor_blinking: AtomicBool,
     cursor_interval_ms: AtomicU64,
     cursor_phase: AtomicU8,
+    theme: Mutex<SurfaceThemeState>,
 }
 
 #[derive(Default)]
@@ -66,6 +70,40 @@ struct FontChoice {
     family: String,
     pt: f64,
     palette: Palette,
+}
+
+#[derive(Clone, Copy)]
+enum ThemeMode {
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct SurfaceThemeState {
+    mode: ThemeMode,
+    base: Palette,
+    overrides: TerminalThemeOverrides,
+    effective: Palette,
+}
+
+impl SurfaceThemeState {
+    fn new(mode: ThemeMode, base: Palette) -> Self {
+        Self {
+            mode,
+            effective: base.clone(),
+            base,
+            overrides: TerminalThemeOverrides::default(),
+        }
+    }
 }
 
 struct CursorAnimation {
@@ -266,6 +304,7 @@ impl SurfaceSessions {
             2 => "off",
             _ => "steady",
         };
+        let theme = control.theme.lock().unwrap().clone();
         Ok(json!({
             "pane": pane,
             "paints": control.paints.load(Ordering::Acquire),
@@ -284,6 +323,10 @@ impl SurfaceSessions {
                 "intervalMs": control.cursor_interval_ms.load(Ordering::Acquire),
                 "phase": cursor_phase,
             },
+            "themeMode": theme.mode.as_str(),
+            "baseTheme": palette_status(&theme.base),
+            "terminalOverrides": override_status(&theme.overrides),
+            "effectiveTheme": palette_status(&theme.effective),
         }))
     }
 
@@ -309,9 +352,10 @@ impl SurfaceSessions {
             .and_then(Value::as_str)
             .ok_or_else(|| refuse("INVALID_PARAMS", "font.family is required"))?;
         let pt = number(font, "pt")?;
-        let palette = parse_theme(
+        let theme = parse_theme(
             request.get("theme").ok_or_else(|| refuse("INVALID_PARAMS", "theme is required"))?,
         )?;
+        let palette = theme.effective.clone();
 
         let canvas = self.canvas()?;
         let channel = self.channel(sidecar_id, identifier)?;
@@ -369,6 +413,7 @@ impl SurfaceSessions {
             cursor_blinking: AtomicBool::new(false),
             cursor_interval_ms: AtomicU64::new(0),
             cursor_phase: AtomicU8::new(0),
+            theme: Mutex::new(theme.clone()),
         });
         supersede(&self.panes, &pane, Arc::clone(&control));
         self.fonts
@@ -524,6 +569,34 @@ impl PanesHandle {
     }
 }
 
+fn packed_hex(value: u32) -> String {
+    format!("#{:02x}{:02x}{:02x}", (value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff)
+}
+
+fn rgb_hex(value: TerminalRgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b)
+}
+
+fn palette_status(value: &Palette) -> Value {
+    json!({
+        "foreground": packed_hex(value.fg),
+        "background": packed_hex(value.bg),
+        "cursor": packed_hex(value.cursor),
+        "cursorAccent": packed_hex(value.cursor_accent),
+        "selectionBackground": packed_hex(value.selection_bg),
+        "ansi": value.ansi.iter().map(|color| packed_hex(*color)).collect::<Vec<_>>(),
+    })
+}
+
+fn override_status(value: &TerminalThemeOverrides) -> Value {
+    json!({
+        "foreground": value.foreground.map(rgb_hex),
+        "background": value.background.map(rgb_hex),
+        "cursor": value.cursor.map(rgb_hex),
+        "ansi": value.ansi.iter().map(|color| color.map(rgb_hex)).collect::<Vec<_>>(),
+    })
+}
+
 fn number(value: &Value, key: &str) -> Result<f64, SurfaceError> {
     value
         .get(key)
@@ -557,11 +630,17 @@ fn parse_hex(text: &str) -> Option<u32> {
     Some(pack_bgra((value >> 16) as u8, (value >> 8) as u8, value as u8, 255))
 }
 
-fn parse_theme(theme: &Value) -> Result<Palette, SurfaceError> {
+fn parse_theme(theme: &Value) -> Result<SurfaceThemeState, SurfaceError> {
+    let mode = match theme.get("mode").and_then(Value::as_str) {
+        Some("light") => ThemeMode::Light,
+        Some("dark") => ThemeMode::Dark,
+        _ => return Err(refuse("INVALID_PARAMS", "theme.mode must be light or dark")),
+    };
     let fg = parse_color(theme, "fg")?;
     let bg = parse_color(theme, "bg")?;
     let cursor = parse_color(theme, "cursor")?;
     let cursor_accent = parse_color(theme, "cursorAccent")?;
+    let selection_bg = parse_color(theme, "selectionBg")?;
     let ansi_values = theme
         .get("ansi")
         .and_then(Value::as_array)
@@ -577,7 +656,10 @@ fn parse_theme(theme: &Value) -> Result<Palette, SurfaceError> {
         ansi[index] = parse_hex(text)
             .ok_or_else(|| refuse("INVALID_PARAMS", format!("theme.ansi[{index}] is not a color")))?;
     }
-    Ok(Palette { fg, bg, cursor, cursor_accent, ansi })
+    Ok(SurfaceThemeState::new(
+        mode,
+        Palette { fg, bg, cursor, cursor_accent, selection_bg, ansi },
+    ))
 }
 
 /// One painter and one ring for one pixel box: the same construction whether
@@ -820,6 +902,18 @@ fn supersede(
 mod tests {
     use super::*;
 
+    fn test_theme() -> SurfaceThemeState {
+        let color = pack_bgra(0x11, 0x11, 0x11, 255);
+        SurfaceThemeState::new(ThemeMode::Light, Palette {
+            fg: color,
+            bg: pack_bgra(0xee, 0xee, 0xee, 255),
+            cursor: pack_bgra(0x33, 0x33, 0x33, 255),
+            cursor_accent: pack_bgra(0xee, 0xee, 0xee, 255),
+            selection_bg: pack_bgra(0xbb, 0xbb, 0xbb, 255),
+            ansi: [color; 256],
+        })
+    }
+
     fn control(pane: &str) -> Arc<PaneControl> {
         Arc::new(PaneControl {
             pane: pane.to_string(),
@@ -841,6 +935,7 @@ mod tests {
             cursor_blinking: AtomicBool::new(false),
             cursor_interval_ms: AtomicU64::new(0),
             cursor_phase: AtomicU8::new(0),
+            theme: Mutex::new(test_theme()),
         })
     }
 
@@ -895,11 +990,12 @@ mod tests {
     #[test]
     fn terminal_theme_keeps_the_declared_cursor_colors() {
         let theme = json!({
+            "mode": "dark",
             "fg": "#112233", "bg": "#445566", "cursor": "#778899",
             "cursorAccent": "#aabbcc", "selectionBg": "#000000",
             "selectionFg": "#ffffff", "ansi": vec!["#010203"; 256],
         });
-        let palette = parse_theme(&theme).expect("complete theme");
+        let palette = parse_theme(&theme).expect("complete theme").base;
         assert_eq!(palette.cursor, pack_bgra(0x77, 0x88, 0x99, 255));
         assert_eq!(palette.cursor_accent, pack_bgra(0xaa, 0xbb, 0xcc, 255));
     }

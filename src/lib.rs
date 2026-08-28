@@ -33,6 +33,10 @@ pub trait TerminalStateMirror: Send {
     fn cursor_style(&self) -> mirror::TerminalCursorStyle;
     /// Provider/user animation policy, separate from terminal cursor state.
     fn cursor_animation(&self) -> mirror::TerminalCursorAnimation;
+    /// OSC 4/10/11/12 state interpreted by the engine. Null entries mean the current host base.
+    fn theme_overrides(&self) -> mirror::TerminalThemeOverrides {
+        mirror::TerminalThemeOverrides::default()
+    }
     /// The cells of one viewport row; negative rows reach into history.
     fn line_cells(&self, line: i32) -> Vec<crate::mirror::TerminalCell>;
 }

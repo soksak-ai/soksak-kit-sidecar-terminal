@@ -35,12 +35,13 @@ pub fn pack_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
 }
 
 /// The resolved theme: what Default and the 256 indexed colors mean here.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Palette {
     pub fg: u32,
     pub bg: u32,
     pub cursor: u32,
     pub cursor_accent: u32,
+    pub selection_bg: u32,
     pub ansi: [u32; 256],
 }
 
@@ -188,6 +189,7 @@ mod tests {
             bg: pack_bgra(10, 10, 10, 255),
             cursor: pack_bgra(240, 240, 240, 255),
             cursor_accent: pack_bgra(12, 12, 12, 255),
+            selection_bg: pack_bgra(60, 60, 60, 255),
             ansi,
         }
     }
