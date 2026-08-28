@@ -49,6 +49,13 @@ blinking. Steady or hidden cursors wait only for explicit output/control events,
 resets the blink phase. The cursor state is present in frames and encrypted checkpoints; the old
 shape-less checkpoint form is not accepted through a compatibility path.
 
+The native painter receives one explicit `light|dark` base palette from the host and resolves the
+engine's OSC 4/10/11/12 state over it. A null override means no terminal override: OSC
+104/110/111/112 therefore reveals the current base rather than a cached earlier theme. A changed
+effective palette invalidates every row and advances the rendered frame before `surface.state`
+publishes `themeMode`, `baseTheme`, `terminalOverrides` and `effectiveTheme`. Providers expose
+engine color state through `TerminalStateMirror.theme_overrides`; adapters do not parse OSC.
+
 ## Verification
 
 ```sh
