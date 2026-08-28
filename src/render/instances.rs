@@ -139,6 +139,7 @@ pub fn row_instances(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mirror::{TerminalCursorShape, TerminalCursorStyle};
 
     fn plain(ch: char) -> TerminalCell {
         TerminalCell {
@@ -217,5 +218,23 @@ mod tests {
         let out = row_instances(&[plain(' ')], 12, &palette(), &mut |_| Some(slot()));
         assert_eq!(out[0].glyph_w, 0);
         assert_eq!(out[0].bg, palette().bg);
+    }
+
+    #[test]
+    fn cursor_shapes_use_the_declared_cursor_colors() {
+        let theme = palette();
+        let mut block = row_instances(&[plain('x')], 12, &theme, &mut |_| Some(slot()))[0];
+        apply_cursor(&mut block, TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false }, &theme);
+        assert_eq!((block.fg, block.bg), (theme.cursor_accent, theme.cursor));
+
+        let mut underline = block;
+        apply_cursor(&mut underline, TerminalCursorStyle { shape: TerminalCursorShape::Underline, blinking: false }, &theme);
+        assert_ne!(underline.flags & FLAG_CURSOR_UNDERLINE, 0);
+        assert_eq!(underline.reserved, theme.cursor);
+
+        let mut bar = block;
+        apply_cursor(&mut bar, TerminalCursorStyle { shape: TerminalCursorShape::Bar, blinking: true }, &theme);
+        assert_ne!(bar.flags & FLAG_CURSOR_BAR, 0);
+        assert_eq!(bar.reserved, theme.cursor);
     }
 }
