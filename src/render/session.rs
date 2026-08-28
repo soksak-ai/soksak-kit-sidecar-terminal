@@ -113,7 +113,16 @@ impl SurfaceSessions {
         }
         let mut held = self.channel.lock().unwrap();
         if let Some(channel) = held.as_ref() {
-            return Ok(Arc::clone(channel));
+            // One Hello is both the liveness probe and the current application's
+            // reply-right registration. A successful existing channel needs no
+            // second Hello from surface.open.
+            if channel
+                .send(&Message::Hello { sidecar_id: sidecar_id.to_string() }, &[])
+                .is_ok()
+            {
+                return Ok(Arc::clone(channel));
+            }
+            *held = None;
         }
         let channel = Arc::new(
             SurfaceChannel::open(identifier)
@@ -233,14 +242,7 @@ impl SurfaceSessions {
         )?;
 
         let canvas = self.canvas()?;
-        let mut channel = self.channel(sidecar_id, identifier)?;
-        // The application restarting leaves this process holding a send right
-        // to a dead port. One probe send names that state; the channel is then
-        // dropped and looked up again against the new bootstrap check-in.
-        if channel.send(&Message::Hello { sidecar_id: sidecar_id.to_string() }, &[]).is_err() {
-            *self.channel.lock().unwrap() = None;
-            channel = self.channel(sidecar_id, identifier)?;
-        }
+        let channel = self.channel(sidecar_id, identifier)?;
         let metrics = canvas
             .font_metrics(family, pt, scale)
             .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;

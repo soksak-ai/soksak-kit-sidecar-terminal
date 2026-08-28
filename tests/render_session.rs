@@ -40,23 +40,34 @@ fn theme() -> serde_json::Value {
     })
 }
 
-fn open(bench: &Bench) -> serde_json::Value {
-    let request = json!({
-        "identifier": bench.identifier,
-        "pane": "tab-test.1",
-        "pixelW": 64.0, "pixelH": 48.0, "scale": 2.0,
-        "font": {"family": "Menlo", "pt": 13.0},
-        "theme": theme(),
-    });
-    bench
-        .sessions
-        .command(
-            "soksak-sidecar-terminal-test",
-            "surface.open",
-            &request,
-            Some((bench.mirror.clone(), bench.signal.clone())),
-        )
-        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
+fn open_and_receive(bench: &Bench) -> (serde_json::Value, Vec<(Message, Vec<u32>)>) {
+    let sessions = &bench.sessions;
+    let identifier = bench.identifier.clone();
+    let mirror = bench.mirror.clone();
+    let signal = bench.signal.clone();
+    std::thread::scope(|scope| {
+        let opened = scope.spawn(move || {
+            let request = json!({
+                "identifier": identifier,
+                "pane": "tab-test.1",
+                "pixelW": 64.0, "pixelH": 48.0, "scale": 2.0,
+                "font": {"family": "Menlo", "pt": 13.0},
+                "theme": theme(),
+            });
+            sessions
+                .command(
+                    "soksak-sidecar-terminal-test",
+                    "surface.open",
+                    &request,
+                    Some((mirror, signal)),
+                )
+                .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
+        });
+        let messages = (0..3)
+            .map(|_| bench.host.recv(2000).expect("host answers").expect("open message arrives"))
+            .collect();
+        (opened.join().expect("surface.open returns"), messages)
+    })
 }
 
 fn progressed(bench: &Bench) {
@@ -68,22 +79,20 @@ fn progressed(bench: &Bench) {
 #[test]
 fn open_answers_cells_and_pushes_hello_ring_and_a_first_frame() {
     let bench = bench("open");
-    let reply = open(&bench);
+    let (reply, messages) = open_and_receive(&bench);
     assert!(reply["cols"].as_u64().unwrap() >= 1);
     assert!(reply["rows"].as_u64().unwrap() >= 1);
-    let (hello, hello_ports) =
-        bench.host.recv(2000).expect("host answers").expect("hello arrives");
+    let (hello, hello_ports) = &messages[0];
     assert!(matches!(hello, Message::Hello { .. }));
     assert_eq!(hello_ports.len(), 1);
-    let (ring, surface_ports) =
-        bench.host.recv(2000).expect("host answers").expect("the ring arrives");
+    let (ring, surface_ports) = &messages[1];
     assert!(matches!(ring, Message::Ring { .. }));
     assert_eq!(surface_ports.len(), 3);
-    let (frame, _) = bench.host.recv(2000).expect("host answers").expect("a first frame");
+    let (frame, _) = &messages[2];
     match frame {
-        Message::FrameReady { seq, ring_index, ref damage, .. } => {
-            assert_eq!(seq, 1, "the first signal takes sequence one");
-            assert_eq!(ring_index, 0);
+        Message::FrameReady { seq, ring_index, damage, .. } => {
+            assert_eq!(*seq, 1, "the first signal takes sequence one");
+            assert_eq!(*ring_index, 0);
             assert!(!damage.is_empty(), "the first frame owes everything");
         }
         other => panic!("expected frameReady, got {other:?}"),
@@ -93,10 +102,7 @@ fn open_answers_cells_and_pushes_hello_ring_and_a_first_frame() {
 #[test]
 fn paused_produces_no_frame_and_resume_catches_up() {
     let bench = bench("pause");
-    open(&bench);
-    for _ in 0..3 {
-        bench.host.recv(2000).expect("host answers").expect("open trio");
-    }
+    open_and_receive(&bench);
     bench
         .sessions
         .command(
@@ -129,10 +135,7 @@ fn paused_produces_no_frame_and_resume_catches_up() {
 #[test]
 fn close_ends_the_ring() {
     let bench = bench("close");
-    open(&bench);
-    for _ in 0..3 {
-        bench.host.recv(2000).expect("host answers").expect("open trio");
-    }
+    open_and_receive(&bench);
     bench
         .sessions
         .command(
@@ -149,7 +152,7 @@ fn close_ends_the_ring() {
 #[test]
 fn read_returns_the_viewport_text() {
     let bench = bench("read");
-    open(&bench);
+    open_and_receive(&bench);
     let reply = bench
         .sessions
         .command(
