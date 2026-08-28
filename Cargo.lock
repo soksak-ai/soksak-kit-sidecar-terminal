@@ -345,7 +345,7 @@ source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=e03e3cfee
 
 [[package]]
 name = "soksak-kit-sidecar-terminal"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "aes-gcm",
  "base64",
