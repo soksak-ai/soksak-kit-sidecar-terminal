@@ -35,6 +35,13 @@ Steady 또는 hidden cursor는 명시적인 output/control event만 기다리고
 reset합니다. Cursor 상태는 frame과 암호화 checkpoint에 들어가며 shape가 없던 옛 checkpoint 형식을
 compatibility path로 받아들이지 않습니다.
 
+Native painter는 host가 명시한 `light|dark` base palette 위에 engine의 OSC 4/10/11/12 상태를
+해소합니다. null override는 terminal override가 없다는 뜻이므로 OSC 104/110/111/112 reset 뒤에는
+예전에 저장한 theme가 아니라 현재 base가 드러납니다. Effective palette가 바뀌면 모든 행을
+무효화하고 적용 frame을 전진시킨 뒤 `surface.state`가 `themeMode`, `baseTheme`,
+`terminalOverrides`, `effectiveTheme`을 게시합니다. Provider는 engine color state를
+`TerminalStateMirror.theme_overrides`로 공개하며 adapter는 OSC를 다시 parse하지 않습니다.
+
 ## 검증
 
 ```sh
@@ -46,7 +53,7 @@ make verify
 owner 연산입니다. 일반 build와 verify는 계속 `--locked`로 실행합니다.
 
 정확한 toolchain 정본은 `rust-toolchain.toml`과 `.python-version`입니다. Make는 dependency를
-준비하기 전에 version과 architecture 불일치를 거부하고 Rust suite와 PTY release installer
-suite를 모두 실행합니다. 릴리스 Actions도 release train이 URL과 SHA-256으로 전달한 immutable
+준비하기 전에 version과 architecture 불일치를 거부하고 Rust suite를 실행합니다. 릴리스 Actions도
+release train이 URL과 SHA-256으로 전달한 immutable
 spec package를 주입한 뒤 같은 명령을 사용하며 spec source를 checkout하거나 다시 빌드하지
 않습니다.

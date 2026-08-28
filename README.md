@@ -55,8 +55,8 @@ make verify
 preserving the existing dependency resolution. Normal build and verification remain `--locked`.
 
 `rust-toolchain.toml` and `.python-version` are the exact toolchain owners. Make rejects a mismatched
-version or architecture before dependency materialization, then runs both the Rust suite and the PTY
-release-installer suite. Release Actions inject the immutable spec package by release-train URL and
+version or architecture before dependency materialization, then runs the Rust suite. Release Actions
+inject the immutable spec package by release-train URL and
 SHA-256 and run this same command; they do not checkout or rebuild spec source.
 
 Terminal status reports each recovery mirror's last observed columns, rows, source event sequence,
