@@ -1416,7 +1416,10 @@ mod tests {
         }
 
         let actual = current_darwin_process_name(std::process::id()).unwrap();
-        assert_eq!(actual, accepted, "Darwin process name did not publish the accepted label");
+        assert_eq!(
+            actual, "soksakv3-terminal-alacritty",
+            "Darwin process name did not publish the project and Sidecar role"
+        );
     }
 
     #[test]
