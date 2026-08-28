@@ -104,6 +104,17 @@ fn repository_owns_public_metadata() {
     assert!(workflow.contains("owner-enforced immutable releases must be enabled"));
 }
 
+#[test]
+fn repository_does_not_ship_an_unconsumed_pty_downloader() {
+    for path in ["scripts/install_pty_release.py", "scripts/test_install_pty_release.py"] {
+        assert!(!Path::new(path).exists(), "unused downloader remains: {path}");
+    }
+    let release_files = fs::read_to_string("release-files.json").expect("read release files");
+    assert!(!release_files.contains("install_pty_release"));
+    let makefile = fs::read_to_string("Makefile").expect("read Makefile");
+    assert!(!makefile.contains("test_install_pty_release"));
+}
+
 fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
