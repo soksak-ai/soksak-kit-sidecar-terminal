@@ -1744,6 +1744,14 @@ mod tests {
         let run_service = source.split("pub fn run_service").nth(1).unwrap();
         let body = run_service.split("fn parse_roots").next().unwrap();
         assert!(!body.contains("subscribe_existing"));
+        assert!(
+            body.contains("processLabel"),
+            "service announcement does not publish the accepted process label"
+        );
+        assert!(
+            body.contains("PROCESS_LABEL_ENVIRONMENT"),
+            "service startup does not read the declared process label"
+        );
     }
 
     #[test]

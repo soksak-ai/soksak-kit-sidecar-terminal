@@ -80,6 +80,7 @@ mod tests {
     #[test]
     fn requests_use_the_shared_control_envelope() {
         assert_eq!(hello("greeting", "secret")["command"], "system.hello");
+        assert_eq!(hello("greeting", "secret")["args"]["protocol"], 2);
         let request = request("r1", "pty.observe", json!({ "session": 7 }));
         assert_eq!(request["args"]["request"]["session"], 7);
     }
