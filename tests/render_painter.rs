@@ -7,6 +7,7 @@ mod common;
 use std::sync::Arc;
 
 use common::{ink_in_cells, palette, GridMirror};
+use soksak_kit_sidecar_terminal::mirror::TerminalRgb;
 use soksak_kit_sidecar_terminal::render::native::{Canvas, Surface};
 use soksak_kit_sidecar_terminal::render::painter::{Painter, Preedit, TargetState};
 
@@ -83,6 +84,25 @@ fn an_unchanged_screen_owes_no_rows() {
     paint(&mut painter, &surface, &mut state, &mirror);
     let dirty = paint(&mut painter, &surface, &mut state, &mirror);
     assert!(dirty.is_empty(), "nothing changed, nothing repaints: {dirty:?}");
+}
+
+#[test]
+fn engine_background_override_repaints_and_reset_restores_the_base() {
+    let (mut painter, surface, mut state) = painter(4, 2);
+    let mut mirror = GridMirror::from_rows(4, &["    ", "    "]);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let base = canvas_read(&painter, &surface);
+
+    mirror.theme_overrides.background = Some(TerminalRgb { r: 255, g: 0, b: 0 });
+    let overridden = paint(&mut painter, &surface, &mut state, &mirror);
+    assert_eq!(overridden, vec![0, 1], "a palette change invalidates every row");
+    let red = canvas_read(&painter, &surface);
+    assert_eq!(&red[..3], &[0, 0, 255], "OSC 11 background reaches BGRA pixels");
+
+    mirror.theme_overrides.background = None;
+    let reset = paint(&mut painter, &surface, &mut state, &mirror);
+    assert_eq!(reset, vec![0, 1], "OSC 111 reset invalidates every row");
+    assert_eq!(canvas_read(&painter, &surface), base, "reset reveals the current base theme");
 }
 
 

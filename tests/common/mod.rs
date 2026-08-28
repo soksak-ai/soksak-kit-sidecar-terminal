@@ -4,6 +4,7 @@
 use soksak_kit_sidecar_terminal::mirror::{
     MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorAnimation,
     TerminalCursorShape, TerminalCursorStyle, TerminalFrame, TerminalModes,
+    TerminalThemeOverrides,
 };
 use soksak_kit_sidecar_terminal::render::instances::{pack_bgra, Palette};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
@@ -35,6 +36,7 @@ pub struct GridMirror {
     pub cursor_visible: bool,
     pub cursor_style: TerminalCursorStyle,
     pub cursor_animation: TerminalCursorAnimation,
+    pub theme_overrides: TerminalThemeOverrides,
 }
 
 impl GridMirror {
@@ -69,6 +71,7 @@ impl GridMirror {
             cursor_visible: false,
             cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
             cursor_animation: TerminalCursorAnimation { interval_ms: 750 },
+            theme_overrides: TerminalThemeOverrides::default(),
         }
     }
 }
@@ -126,6 +129,9 @@ impl TerminalStateMirror for GridMirror {
     }
     fn cursor_animation(&self) -> TerminalCursorAnimation {
         self.cursor_animation
+    }
+    fn theme_overrides(&self) -> TerminalThemeOverrides {
+        self.theme_overrides.clone()
     }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         if line < 0 {
