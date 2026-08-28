@@ -104,6 +104,25 @@ impl SurfaceThemeState {
             overrides: TerminalThemeOverrides::default(),
         }
     }
+
+    fn resolve(&mut self) {
+        let mut effective = self.base.clone();
+        if let Some(color) = self.overrides.foreground {
+            effective.fg = pack_bgra(color.r, color.g, color.b, 255);
+        }
+        if let Some(color) = self.overrides.background {
+            effective.bg = pack_bgra(color.r, color.g, color.b, 255);
+        }
+        if let Some(color) = self.overrides.cursor {
+            effective.cursor = pack_bgra(color.r, color.g, color.b, 255);
+        }
+        for (index, color) in self.overrides.ansi.iter().enumerate() {
+            if let Some(color) = color {
+                effective.ansi[index] = pack_bgra(color.r, color.g, color.b, 255);
+            }
+        }
+        self.effective = effective;
+    }
 }
 
 struct CursorAnimation {
@@ -304,7 +323,11 @@ impl SurfaceSessions {
             2 => "off",
             _ => "steady",
         };
-        let theme = control.theme.lock().unwrap().clone();
+        let theme = {
+            let mut theme = control.theme.lock().unwrap();
+            theme.resolve();
+            theme.clone()
+        };
         Ok(json!({
             "pane": pane,
             "paints": control.paints.load(Ordering::Acquire),
