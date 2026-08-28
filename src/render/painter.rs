@@ -70,7 +70,9 @@ pub struct Painter {
     canvas: Arc<Canvas>,
     atlas: Atlas,
     atlas_texture: AtlasTexture,
+    base_palette: Palette,
     palette: Palette,
+    palette_revision: u64,
     family: String,
     pt: f64,
     scale: f64,
@@ -104,7 +106,9 @@ impl Painter {
             canvas,
             atlas: Atlas::default(),
             atlas_texture,
+            base_palette: palette.clone(),
             palette,
+            palette_revision: 0,
             family: family.to_string(),
             pt,
             scale,
@@ -143,6 +147,12 @@ impl Painter {
         preedit: Option<&Preedit>,
         cursor_on: bool,
     ) -> Result<(), String> {
+        let effective_palette = self.base_palette.resolve(&mirror.theme_overrides());
+        if self.palette != effective_palette {
+            self.palette = effective_palette;
+            self.palette_revision = self.palette_revision.wrapping_add(1);
+            self.invalidate();
+        }
         let show_cursor = mirror.modes().show_cursor && offset == 0 && cursor_on;
         let cursor = mirror.cursor();
         let cursor_style = mirror.cursor_style();
@@ -150,6 +160,7 @@ impl Painter {
             let line = row as i32 - offset as i32;
             let cells = mirror.line_cells(line);
             let mut hash = row_hash(&cells);
+            hash ^= self.palette_revision.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             let preedit_here =
                 preedit.is_some() && offset == 0 && cursor.0 == row as usize;
             let cursor_here = show_cursor && cursor.0 == row as usize && !preedit_here;

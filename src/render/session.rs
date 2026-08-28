@@ -106,22 +106,7 @@ impl SurfaceThemeState {
     }
 
     fn resolve(&mut self) {
-        let mut effective = self.base.clone();
-        if let Some(color) = self.overrides.foreground {
-            effective.fg = pack_bgra(color.r, color.g, color.b, 255);
-        }
-        if let Some(color) = self.overrides.background {
-            effective.bg = pack_bgra(color.r, color.g, color.b, 255);
-        }
-        if let Some(color) = self.overrides.cursor {
-            effective.cursor = pack_bgra(color.r, color.g, color.b, 255);
-        }
-        for (index, color) in self.overrides.ansi.iter().enumerate() {
-            if let Some(color) = color {
-                effective.ansi[index] = pack_bgra(color.r, color.g, color.b, 255);
-            }
-        }
-        self.effective = effective;
+        self.effective = self.base.resolve(&self.overrides);
     }
 }
 

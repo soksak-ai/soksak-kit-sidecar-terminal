@@ -2,7 +2,10 @@
 //! reads its cell's instance, paints the background and mixes glyph coverage
 //! over it. Pure Rust — colors resolve here, never on the GPU.
 
-use crate::mirror::{TerminalCell, TerminalColor, TerminalCursorShape, TerminalCursorStyle};
+use crate::mirror::{
+    TerminalCell, TerminalColor, TerminalCursorShape, TerminalCursorStyle,
+    TerminalThemeOverrides,
+};
 
 /// Exactly 32 bytes, matched by the shader's struct stride.
 #[repr(C)]
@@ -46,6 +49,25 @@ pub struct Palette {
 }
 
 impl Palette {
+    pub fn resolve(&self, overrides: &TerminalThemeOverrides) -> Self {
+        let mut effective = self.clone();
+        if let Some(color) = overrides.foreground {
+            effective.fg = pack_bgra(color.r, color.g, color.b, 255);
+        }
+        if let Some(color) = overrides.background {
+            effective.bg = pack_bgra(color.r, color.g, color.b, 255);
+        }
+        if let Some(color) = overrides.cursor {
+            effective.cursor = pack_bgra(color.r, color.g, color.b, 255);
+        }
+        for (index, color) in overrides.ansi.iter().enumerate() {
+            if let Some(color) = color {
+                effective.ansi[index] = pack_bgra(color.r, color.g, color.b, 255);
+            }
+        }
+        effective
+    }
+
     /// Foreground resolution; bold brightens the first eight names (N < 8 → N + 8).
     pub fn resolve_fg(&self, color: TerminalColor, bold: bool) -> u32 {
         match color {
