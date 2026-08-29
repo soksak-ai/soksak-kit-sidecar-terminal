@@ -49,13 +49,18 @@ Native painter는 host가 명시한 `light|dark` base palette 위에 engine의 O
 `surface.theme`은 완전한 replacement base 하나를 검증하고 active engine override를 보존하며
 resize palette를 갱신한 뒤 render thread를 깨웁니다. Surface를 다시 열거나 polling하지 않습니다.
 
-Native selection은 `soksak-contract-surface` 0.0.5를 사용합니다. 공통 mirror가 gesture identity,
+Native selection은 `soksak-contract-surface` 0.0.6을 사용합니다. 공통 mirror가 gesture identity,
 단조 증가 sequence, stale owner 거부, viewport offset 변환, 완전한 snapshot을 소유합니다. Engine adapter는
 begin/update/clear, 선택 text, inclusive row range를 소유하며 generic cell-text fallback은 없습니다.
 Painter는 engine range를 소비해 선언된 selection foreground/background를 적용합니다.
 `surface.selection`은 같은 snapshot을 `surface.state`로 게시하고 mutation일 때만 paint를 깨웁니다.
 같은 state 응답은 engine의 mouse-tracking·alternate-scroll mode 전체를 게시합니다. Plugin은 provider
 이름이나 DOM 위치를 추측하지 않고 이 사실로 gesture를 routing합니다.
+
+Native wheel input은 이 Kit이 pane의 실측 cell box로 정규화할 때까지 pixel/line/page 단위를 유지합니다.
+분수 pixel delta는 pane별 accumulator에 남습니다. Shift는 local scrollback을 강제하고, 그 외에는 현재
+engine mode가 mouse report, alternate scroll, scrollback 중 하나를 선택합니다. Input byte는 engine
+adapter만 encode합니다. 이 Kit은 strict surface result로 byte를 반환하며 PTY에는 쓰지 않습니다.
 
 ## 검증
 

@@ -1,7 +1,7 @@
 use crate::frame::encode_line;
 pub use soksak_contract_surface::{
     CellSide, SelectionKind, SelectionModifiers, SelectionPhase, SelectionPoint,
-    SelectionRequest, SelectionSnapshot,
+    SelectionRequest, SelectionSnapshot, WheelEngineResult, WheelRequest, WheelRoute,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +114,23 @@ pub struct EngineSelectionPoint {
     pub side: CellSide,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineWheelRoute {
+    MouseReport,
+    AlternateScroll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineWheelInput {
+    pub row: u16,
+    pub col: u16,
+    /// Positive values move right/down in the input device coordinate system.
+    pub horizontal: i32,
+    pub vertical: i32,
+    pub modifiers: SelectionModifiers,
+    pub route: EngineWheelRoute,
+}
+
 pub trait TerminalEngine: Send + Sized {
     fn new(cols: u16, rows: u16) -> Self;
     fn initialize(&mut self) {}
@@ -150,6 +167,9 @@ pub trait TerminalEngine: Send + Sized {
     fn selection_text(&self) -> Option<String>;
     /// Inclusive selected columns for one engine line, used directly by the painter.
     fn selection_range(&self, line: i32) -> Option<(u16, u16)>;
+    /// Encode a mode-routed wheel event. The engine adapter owns the protocol bytes; the caller
+    /// owns unit normalization and the single PTY writer.
+    fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String>;
     /// Every viewport row with the view scrolled `offset` rows into history: row `y` is engine
     /// line `y - offset`. `offset` is already clamped by the caller. Engines with a cheaper
     /// consecutive read override this.
@@ -439,6 +459,10 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
                 sequence: self.selection.sequence,
             },
         }
+    }
+
+    pub fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String> {
+        self.engine.wheel_input(input)
     }
 
     pub fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
@@ -797,6 +821,9 @@ mod tests {
             if line == anchor.line { Some((anchor.col, cols.saturating_sub(1))) }
             else if line == focus.line { Some((0, focus.col)) }
             else { Some((0, cols.saturating_sub(1))) }
+        }
+        fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String> {
+            Ok(format!("{}:{}:{}:{}", input.row, input.col, input.horizontal, input.vertical).into_bytes())
         }
         fn suppressed_replies(&self) -> u64 {
             0

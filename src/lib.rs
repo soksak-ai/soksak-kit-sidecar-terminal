@@ -45,6 +45,10 @@ pub trait TerminalStateMirror: Send {
         offset: usize,
     ) -> Result<crate::mirror::SelectionSnapshot, String>;
     fn selection_range(&self, line: i32) -> Option<(u16, u16)>;
+    fn wheel_input(
+        &mut self,
+        input: crate::mirror::EngineWheelInput,
+    ) -> Result<Vec<u8>, String>;
 }
 
 pub type MirrorFactory = fn(cols: u16, rows: u16) -> Box<dyn TerminalStateMirror>;

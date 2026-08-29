@@ -1513,6 +1513,9 @@ mod tests {
             &mut self, _request: &SelectionRequest, _offset: usize,
         ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
         fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
+        fn wheel_input(&mut self, _input: crate::mirror::EngineWheelInput) -> Result<Vec<u8>, String> {
+            Err("fixture has no wheel input".into())
+        }
     }
 
     /// A mirror with a fixed screen; echoes the offset it is asked for so clamping is observable.
@@ -1576,6 +1579,9 @@ mod tests {
             &mut self, _request: &SelectionRequest, _offset: usize,
         ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
         fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
+        fn wheel_input(&mut self, _input: crate::mirror::EngineWheelInput) -> Result<Vec<u8>, String> {
+            Err("fixture has no wheel input".into())
+        }
     }
 
     fn paint_mirror(_cols: u16, _rows: u16) -> Box<dyn TerminalStateMirror> {
@@ -1631,6 +1637,9 @@ mod tests {
             &mut self, _request: &SelectionRequest, _offset: usize,
         ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
         fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
+        fn wheel_input(&mut self, _input: crate::mirror::EngineWheelInput) -> Result<Vec<u8>, String> {
+            Err("fixture has no wheel input".into())
+        }
     }
 
     fn test_registry(

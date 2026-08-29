@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use soksak_kit_sidecar_terminal::mirror::{
-    MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorAnimation,
+    EngineWheelInput, MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorAnimation,
     SelectionRequest, SelectionSnapshot, TerminalCursorShape, TerminalCursorStyle, TerminalFrame,
     TerminalModes, TerminalThemeOverrides,
 };
@@ -165,6 +165,9 @@ impl TerminalStateMirror for GridMirror {
             (selected_line == line).then_some((start, end))
         })
     }
+    fn wheel_input(&mut self, _input: EngineWheelInput) -> Result<Vec<u8>, String> {
+        Err("fixture has no wheel input".into())
+    }
 }
 
 pub fn palette() -> Palette {
@@ -263,5 +266,8 @@ impl TerminalStateMirror for SharedGrid {
     }
     fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
         self.0.lock().unwrap().selection_range(line)
+    }
+    fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String> {
+        self.0.lock().unwrap().wheel_input(input)
     }
 }

@@ -8,8 +8,12 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
-use soksak_contract_surface::{DamageRect, Message};
+use soksak_contract_surface::{
+    decode_wheel_request, encode_wheel_engine_result, DamageRect, Message, WheelDeltaMode,
+    WheelEngineResult, WheelRoute,
+};
 
 use super::channel::SurfaceChannel;
 use super::instances::{pack_bgra, Palette};
@@ -66,6 +70,11 @@ struct PaneControl {
 struct OverlayState {
     offset: usize,
     preedit: Option<(String, usize)>,
+    wheel_x: f64,
+    wheel_y: f64,
+    cell_css_w: f64,
+    cell_css_h: f64,
+    page_rows: u16,
 }
 
 fn inactive_selection_snapshot() -> soksak_contract_surface::SelectionSnapshot {
@@ -279,6 +288,7 @@ impl SurfaceSessions {
             "surface.resize" => self.resize(request),
             "surface.setPaused" => self.set_paused(request),
             "surface.preedit" => self.preedit(request),
+            "surface.wheel" => self.wheel(request, wiring),
             "surface.scroll" => self.scroll(request, wiring),
             "surface.read" => self.read(request, wiring),
             "surface.close" => self.close(request),
@@ -429,7 +439,12 @@ impl SurfaceSessions {
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             dirty: AtomicBool::new(true),
-            overlay: Mutex::new(OverlayState::default()),
+            overlay: Mutex::new(OverlayState {
+                cell_css_w: metrics.cell_w / scale,
+                cell_css_h: metrics.cell_h / scale,
+                page_rows: rows,
+                ..OverlayState::default()
+            }),
             returns: Mutex::new(Vec::new()),
             signal,
             pending: Mutex::new(None),
@@ -472,6 +487,15 @@ impl SurfaceSessions {
             &canvas, &font.family, font.pt, scale, pixel_w, pixel_h, font.palette.clone(),
         )
         .map_err(|error| refuse("RESIZE_UNAVAILABLE", error))?;
+        let (cell_w, cell_h) = painter.cell_size();
+        {
+            let mut overlay = control.overlay.lock().unwrap();
+            overlay.cell_css_w = f64::from(cell_w) / scale;
+            overlay.cell_css_h = f64::from(cell_h) / scale;
+            overlay.page_rows = rows;
+            overlay.wheel_x = 0.0;
+            overlay.wheel_y = 0.0;
+        }
         drop(fonts);
         *control.pending.lock().unwrap() = Some((painter, ring, scale));
         control.dirty.store(true, Ordering::Release);
@@ -562,6 +586,89 @@ impl SurfaceSessions {
         control.dirty.store(true, Ordering::Release);
         control.wake();
         Ok(json!({ "offset": offset, "historySize": history }))
+    }
+
+    fn wheel(
+        &self,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        let request = decode_wheel_request(request)
+            .map_err(|error| refuse("INVALID_PARAMS", error))?;
+        let control = self.control_of(&request.pane)?;
+        let (mirror, _) = wiring
+            .ok_or_else(|| refuse("NOT_FOUND", "no live terminal-state mirror for this key"))?;
+        let (horizontal, vertical, point, cell_w, cell_h) = {
+            let mut overlay = control.overlay.lock().unwrap();
+            let cell_w = overlay.cell_css_w.max(f64::EPSILON);
+            let cell_h = overlay.cell_css_h.max(f64::EPSILON);
+            let (dx, dy) = match request.delta_mode {
+                WheelDeltaMode::Pixel => (request.delta_x, request.delta_y),
+                WheelDeltaMode::Line => (request.delta_x * cell_w, request.delta_y * cell_h),
+                WheelDeltaMode::Page => {
+                    let rows = f64::from(overlay.page_rows.max(1));
+                    (request.delta_x * cell_w, request.delta_y * cell_h * rows)
+                }
+            };
+            overlay.wheel_x += dx;
+            overlay.wheel_y += dy;
+            let horizontal = (overlay.wheel_x / cell_w).trunc()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+            let vertical = (overlay.wheel_y / cell_h).trunc()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+            overlay.wheel_x -= f64::from(horizontal) * cell_w;
+            overlay.wheel_y -= f64::from(vertical) * cell_h;
+            (horizontal, vertical, request.point, cell_w, cell_h)
+        };
+        if horizontal == 0 && vertical == 0 {
+            return encode_wheel_engine_result(&WheelEngineResult {
+                route: WheelRoute::Ignored, offset: None, history_size: None, data_b64: None,
+            }).map_err(|error| refuse("WHEEL_STATE_INVALID", error));
+        }
+        let mut mirror = mirror.lock().unwrap();
+        let modes = mirror.modes();
+        let mouse_reporting = modes.mouse_click || modes.mouse_drag || modes.mouse_motion;
+        let engine_route = if !request.modifiers.shift && mouse_reporting {
+            Some((crate::mirror::EngineWheelRoute::MouseReport, WheelRoute::MouseReport))
+        } else if !request.modifiers.shift && mirror.alt_active() && modes.alternate_scroll {
+            Some((crate::mirror::EngineWheelRoute::AlternateScroll, WheelRoute::AlternateScroll))
+        } else {
+            None
+        };
+        if let Some((engine_route, route)) = engine_route {
+            let row = (point.y / cell_h).floor()
+                .clamp(0.0, f64::from(mirror.rows().saturating_sub(1))) as u16;
+            let col = (point.x / cell_w).floor()
+                .clamp(0.0, f64::from(mirror.cols().saturating_sub(1))) as u16;
+            let bytes = mirror.wheel_input(crate::mirror::EngineWheelInput {
+                row, col, horizontal, vertical, modifiers: request.modifiers, route: engine_route,
+            }).map_err(|error| refuse("WHEEL_INPUT_FAILED", error))?;
+            if bytes.is_empty() {
+                return Err(refuse("WHEEL_INPUT_FAILED", "engine returned empty wheel input"));
+            }
+            let data_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            return encode_wheel_engine_result(&WheelEngineResult {
+                route, offset: None, history_size: None, data_b64: Some(data_b64),
+            }).map_err(|error| refuse("WHEEL_STATE_INVALID", error));
+        }
+        let history = mirror.history_size();
+        drop(mirror);
+        if vertical == 0 {
+            return encode_wheel_engine_result(&WheelEngineResult {
+                route: WheelRoute::Ignored, offset: None, history_size: None, data_b64: None,
+            }).map_err(|error| refuse("WHEEL_STATE_INVALID", error));
+        }
+        let mut overlay = control.overlay.lock().unwrap();
+        overlay.offset = (overlay.offset as i64 - i64::from(vertical))
+            .clamp(0, history as i64) as usize;
+        let offset = overlay.offset;
+        drop(overlay);
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        encode_wheel_engine_result(&WheelEngineResult {
+            route: WheelRoute::Scrollback,
+            offset: Some(offset as u64), history_size: Some(history as u64), data_b64: None,
+        }).map_err(|error| refuse("WHEEL_STATE_INVALID", error))
     }
 
     fn selection(
@@ -1016,6 +1123,72 @@ fn supersede(
 mod tests {
     use super::*;
 
+    struct WheelMirror {
+        modes: crate::mirror::TerminalModes,
+        alt: bool,
+        history: usize,
+        last: Option<crate::mirror::EngineWheelInput>,
+    }
+
+    impl crate::TerminalStateMirror for WheelMirror {
+        fn feed(&mut self, _: &[u8]) {}
+        fn resize(&mut self, _: u16, _: u16) {}
+        fn rehydrate(&self) -> Vec<u8> { Vec::new() }
+        fn cold_paint(&self) -> Vec<u8> { Vec::new() }
+        fn frame_at(&self, offset: usize) -> crate::mirror::TerminalFrame {
+            crate::mirror::TerminalFrame {
+                cols: 10, rows: 5, cursor: (0, 0), cursor_visible: true,
+                cursor_style: crate::mirror::TerminalCursorStyle {
+                    shape: crate::mirror::TerminalCursorShape::Block, blinking: false,
+                },
+                cursor_animation: crate::mirror::TerminalCursorAnimation { interval_ms: 0 },
+                alt_active: self.alt, history_size: self.history, offset,
+                modes: self.modes, lines: Vec::new(),
+            }
+        }
+        fn history_size(&self) -> usize { self.history }
+        fn modes(&self) -> crate::mirror::TerminalModes { self.modes }
+        fn capabilities(&self) -> crate::mirror::MirrorCapabilities {
+            crate::mirror::MirrorCapabilities::default()
+        }
+        fn alt_active(&self) -> bool { self.alt }
+        fn suppressed_replies(&self) -> u64 { 0 }
+        fn cols(&self) -> u16 { 10 }
+        fn rows(&self) -> u16 { 5 }
+        fn cursor(&self) -> (usize, usize) { (0, 0) }
+        fn cursor_style(&self) -> crate::mirror::TerminalCursorStyle {
+            crate::mirror::TerminalCursorStyle {
+                shape: crate::mirror::TerminalCursorShape::Block, blinking: false,
+            }
+        }
+        fn cursor_animation(&self) -> crate::mirror::TerminalCursorAnimation {
+            crate::mirror::TerminalCursorAnimation { interval_ms: 0 }
+        }
+        fn line_cells(&self, _: i32) -> Vec<crate::mirror::TerminalCell> { Vec::new() }
+        fn selection_command(
+            &mut self,
+            _: &crate::mirror::SelectionRequest,
+            _: usize,
+        ) -> Result<crate::mirror::SelectionSnapshot, String> {
+            Err("fixture has no selection".into())
+        }
+        fn selection_range(&self, _: i32) -> Option<(u16, u16)> { None }
+        fn wheel_input(
+            &mut self,
+            input: crate::mirror::EngineWheelInput,
+        ) -> Result<Vec<u8>, String> {
+            self.last = Some(input);
+            Ok(format!("{}:{}:{}:{}", input.row, input.col, input.horizontal, input.vertical).into_bytes())
+        }
+    }
+
+    fn wheel_wiring(modes: crate::mirror::TerminalModes, alt: bool, history: usize) -> (SharedMirror, FrameSignal) {
+        (
+            Arc::new(Mutex::new(Box::new(WheelMirror { modes, alt, history, last: None }))),
+            Arc::new((Mutex::new(0), Condvar::new())),
+        )
+    }
+
     fn test_theme() -> SurfaceThemeState {
         let color = pack_bgra(0x11, 0x11, 0x11, 255);
         SurfaceThemeState::new(ThemeMode::Light, Palette {
@@ -1114,6 +1287,60 @@ mod tests {
             None,
         ).expect_err("the missing mirror is still a named refusal");
         assert_ne!(error.code, "UNKNOWN_COMMAND");
+    }
+
+    #[test]
+    fn surface_wheel_routes_mouse_bytes_or_scrollback_from_engine_modes() {
+        let sessions = SurfaceSessions::new();
+        let mouse_control = control("tab-mouse.1");
+        {
+            let mut overlay = mouse_control.overlay.lock().unwrap();
+            overlay.cell_css_w = 10.0;
+            overlay.cell_css_h = 20.0;
+            overlay.page_rows = 5;
+        }
+        sessions.panes.lock().unwrap().insert("tab-mouse.1".into(), mouse_control);
+        let mouse_modes = crate::mirror::TerminalModes {
+            mouse_click: true,
+            ..crate::mirror::TerminalModes::default()
+        };
+        let mouse = sessions.command(
+            "engine-a",
+            "surface.wheel",
+            &json!({
+                "window": "win-a", "pane": "tab-mouse.1",
+                "point": {"x": 15.0, "y": 25.0},
+                "deltaX": 0.0, "deltaY": -1.0, "deltaMode": "line",
+                "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+            }),
+            Some(wheel_wiring(mouse_modes, false, 20)),
+        ).expect("mouse wheel");
+        assert_eq!(mouse["route"], "mouse-report");
+        let encoded = mouse["dataB64"].as_str().unwrap();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(), b"1:1:0:-1");
+
+        let scroll_control = control("tab-scroll.1");
+        {
+            let mut overlay = scroll_control.overlay.lock().unwrap();
+            overlay.cell_css_w = 10.0;
+            overlay.cell_css_h = 20.0;
+            overlay.page_rows = 5;
+        }
+        sessions.panes.lock().unwrap().insert("tab-scroll.1".into(), scroll_control);
+        let scroll = sessions.command(
+            "engine-a",
+            "surface.wheel",
+            &json!({
+                "window": "win-a", "pane": "tab-scroll.1",
+                "point": {"x": 15.0, "y": 25.0},
+                "deltaX": 0.0, "deltaY": -2.0, "deltaMode": "line",
+                "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+            }),
+            Some(wheel_wiring(crate::mirror::TerminalModes::default(), false, 20)),
+        ).expect("scrollback wheel");
+        assert_eq!(scroll["route"], "scrollback");
+        assert_eq!(scroll["offset"], 2);
+        assert_eq!(scroll["historySize"], 20);
     }
 
     #[test]

@@ -51,7 +51,7 @@ engine color state through `TerminalStateMirror.theme_overrides`; adapters do no
 `surface.theme` validates one complete replacement base, preserves active engine overrides,
 updates the resize palette and wakes the render thread. It does not reopen the surface or poll.
 
-Native selection uses `soksak-contract-surface` 0.0.5. The common mirror owns gesture identity,
+Native selection uses `soksak-contract-surface` 0.0.6. The common mirror owns gesture identity,
 monotonic sequence, stale-owner refusal, viewport-offset translation and complete snapshots. An
 engine adapter owns begin/update/clear, selected text and inclusive row ranges; no generic cell-text
 fallback exists. The painter consumes those engine ranges and applies the declared selection
@@ -59,6 +59,12 @@ foreground/background. `surface.selection` publishes the same snapshot through `
 wakes a paint only for mutations.
 The same state response publishes the engine's complete mouse-tracking and alternate-scroll modes;
 the Plugin routes gestures from that fact rather than a provider name or DOM-position guess.
+
+Native wheel input keeps pixel/line/page units until this Kit normalizes them against the pane's
+measured cell box. Fractional pixel deltas stay in a per-pane accumulator. Shift forces local
+scrollback; otherwise current engine modes choose mouse report, alternate scroll or scrollback.
+The engine adapter alone encodes input bytes. This Kit returns them under the strict surface result
+and never writes the PTY.
 
 ## Verification
 
