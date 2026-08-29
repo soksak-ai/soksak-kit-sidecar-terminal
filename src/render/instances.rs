@@ -32,6 +32,7 @@ pub const FLAG_STRIKEOUT: u32 = 2;
 pub const FLAG_WIDE: u32 = 4;
 pub const FLAG_CURSOR_UNDERLINE: u32 = 8;
 pub const FLAG_CURSOR_BAR: u32 = 16;
+pub const FLAG_CURSOR_HOLLOW: u32 = 32;
 
 pub fn pack_bgra(r: u8, g: u8, b: u8, a: u8) -> u32 {
     (b as u32) | ((g as u32) << 8) | ((r as u32) << 16) | ((a as u32) << 24)
@@ -92,7 +93,7 @@ impl Palette {
 }
 
 pub fn apply_cursor(cell: &mut GpuCell, style: TerminalCursorStyle, palette: &Palette) {
-    cell.flags &= !(FLAG_CURSOR_UNDERLINE | FLAG_CURSOR_BAR);
+    cell.flags &= !(FLAG_CURSOR_UNDERLINE | FLAG_CURSOR_BAR | FLAG_CURSOR_HOLLOW);
     cell.reserved = palette.cursor;
     match style.shape {
         TerminalCursorShape::Block => {
@@ -102,6 +103,12 @@ pub fn apply_cursor(cell: &mut GpuCell, style: TerminalCursorStyle, palette: &Pa
         TerminalCursorShape::Underline => cell.flags |= FLAG_CURSOR_UNDERLINE,
         TerminalCursorShape::Bar => cell.flags |= FLAG_CURSOR_BAR,
     }
+}
+
+pub fn apply_hollow_cursor(cell: &mut GpuCell, palette: &Palette) {
+    cell.flags &= !(FLAG_CURSOR_UNDERLINE | FLAG_CURSOR_BAR | FLAG_CURSOR_HOLLOW);
+    cell.flags |= FLAG_CURSOR_HOLLOW;
+    cell.reserved = palette.cursor;
 }
 
 /// Where a glyph's coverage sits, handed in by the painter's atlas.
@@ -291,5 +298,11 @@ mod tests {
         }, &theme);
         assert_ne!(bar.flags & FLAG_CURSOR_BAR, 0);
         assert_eq!(bar.reserved, theme.cursor);
+
+        let mut hollow = row_instances(&[plain('x')], 12, &theme, &mut |_| Some(slot()))[0];
+        apply_hollow_cursor(&mut hollow, &theme);
+        assert_ne!(hollow.flags & FLAG_CURSOR_HOLLOW, 0);
+        assert_eq!((hollow.fg, hollow.bg), (theme.fg, theme.bg));
+        assert_eq!(hollow.reserved, theme.cursor);
     }
 }

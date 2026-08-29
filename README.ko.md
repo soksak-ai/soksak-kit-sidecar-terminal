@@ -39,6 +39,9 @@ Condition variable은 engine이 visible cursor의 blinking을 선언한 동안�
 Steady 또는 hidden cursor는 명시적인 output/control event만 기다리고 output activity가 blink phase를
 reset합니다. Cursor 상태는 frame과 암호화 checkpoint에 들어가며 shape가 없던 옛 checkpoint 형식을
 compatibility path로 받아들이지 않습니다.
+`surface.focus`는 presentation만 바꿉니다. Focus loss는 blink deadline을 멈추고 steady hollow block을
+그리며 engine이 소유한 shape와 blinking 값은 state에 보존합니다. Focus gain은 그 engine presentation을
+복원합니다. Metal cursor border는 모든 provider가 공유합니다.
 
 Native painter는 host가 명시한 `light|dark` base palette 위에 engine의 OSC 4/10/11/12 상태를
 해소합니다. null override는 terminal override가 없다는 뜻이므로 OSC 104/110/111/112 reset 뒤에는
