@@ -1290,6 +1290,24 @@ mod tests {
     }
 
     #[test]
+    fn surface_pointer_is_a_declared_engine_routed_command() {
+        let sessions = SurfaceSessions::new();
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
+        let error = sessions.command(
+            "engine-a",
+            "surface.pointer",
+            &json!({
+                "window": "win-a", "pane": "tab-a.1",
+                "point": {"x": 12.0, "y": 24.0},
+                "phase": "down", "button": "left", "clickCount": 1,
+                "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+            }),
+            None,
+        ).expect_err("the missing mirror is still a named refusal");
+        assert_ne!(error.code, "UNKNOWN_COMMAND");
+    }
+
+    #[test]
     fn surface_wheel_routes_mouse_bytes_or_scrollback_from_engine_modes() {
         let sessions = SurfaceSessions::new();
         let mouse_control = control("tab-mouse.1");
