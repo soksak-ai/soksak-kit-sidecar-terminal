@@ -32,6 +32,7 @@ pub fn plain(ch: char) -> TerminalCell {
 pub struct GridMirror {
     pub cols: u16,
     pub grid: Vec<Vec<TerminalCell>>,
+    pub strict_bounds: bool,
     pub cursor: (usize, usize),
     pub cursor_visible: bool,
     pub cursor_style: TerminalCursorStyle,
@@ -67,6 +68,7 @@ impl GridMirror {
         Self {
             cols,
             grid,
+            strict_bounds: false,
             cursor: (0, 0),
             cursor_visible: false,
             cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
@@ -134,6 +136,13 @@ impl TerminalStateMirror for GridMirror {
         self.theme_overrides.clone()
     }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
+        if self.strict_bounds {
+            assert!(
+                line >= 0 && line < self.grid.len() as i32,
+                "renderer requested line {line} outside mirror rows {}",
+                self.grid.len()
+            );
+        }
         if line < 0 {
             return Vec::new();
         }

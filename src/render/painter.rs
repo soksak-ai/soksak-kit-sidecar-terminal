@@ -127,6 +127,10 @@ impl Painter {
         (self.cell_w, self.cell_h)
     }
 
+    pub fn grid_size(&self) -> (u16, u16) {
+        (self.cols, self.rows)
+    }
+
     pub fn canvas(&self) -> &Canvas {
         &self.canvas
     }

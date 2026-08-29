@@ -864,7 +864,7 @@ fn apply_observation(
             cols,
             rows,
         } => {
-            let size_signal = {
+            let (size_signal, frame_signal) = {
                 let mut states = registry.lock().unwrap();
                 let Some(state) = states.get_mut(key) else {
                     return false;
@@ -873,12 +873,16 @@ fn apply_observation(
                     return false;
                 }
                 state.source_event_sequence = event_sequence;
-                state.size_signal.clone()
+                (state.size_signal.clone(), state.frame_signal.clone())
             };
             mirror.lock().unwrap().resize(cols, rows);
             let (size, ready) = &*size_signal;
             *size.lock().unwrap() = (cols, rows);
             ready.notify_all();
+            // A native surface may already be waiting for this exact grid.
+            // Wake it without inventing an output sequence: the renderer
+            // compares the mirror dimensions after this resize event.
+            frame_signal.1.notify_all();
             true
         }
         ObservationFrame::Gap {

@@ -726,6 +726,7 @@ fn spawn_render_thread(
             *seq.lock().unwrap()
         };
         let mut last_signaled: Option<usize> = None;
+        let mut awaiting_grid = false;
         let mut cursor_animation = CursorAnimation::new();
         loop {
             if control.stop.load(Ordering::Acquire) {
@@ -781,9 +782,23 @@ fn spawn_render_thread(
                 *seq.lock().unwrap()
             };
             let output_activity = progressed != last_seen;
-            let owes = progressed != last_seen || control.dirty.swap(false, Ordering::AcqRel);
-            if owes && !control.paused.load(Ordering::Acquire) {
+            let dirty = control.dirty.swap(false, Ordering::AcqRel);
+            let grid_matches = {
+                let mirror = mirror.lock().unwrap();
+                (mirror.cols(), mirror.rows()) == painter.grid_size()
+            };
+            let owes = progressed != last_seen || dirty || (awaiting_grid && grid_matches);
+            if owes && !grid_matches {
+                // surface.open and surface.resize announce the new grid before
+                // terminal.resize reaches the mirror. A renderer must never
+                // read outside the engine-owned grid during that handshake.
+                // The observation resize event wakes this same signal.
                 last_seen = progressed;
+                awaiting_grid = true;
+            }
+            if owes && grid_matches && !control.paused.load(Ordering::Acquire) {
+                last_seen = progressed;
+                awaiting_grid = false;
                 let base_palette = control.theme.lock().unwrap().base.clone();
                 painter.set_base_palette(base_palette);
                 let (offset, preedit) = {

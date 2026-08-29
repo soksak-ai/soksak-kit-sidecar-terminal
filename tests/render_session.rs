@@ -67,10 +67,37 @@ fn open_and_receive(bench: &Bench) -> (serde_json::Value, Vec<(Message, Vec<u32>
                 )
                 .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message))
         });
-        let messages = (0..3)
+        let mut messages: Vec<_> = (0..2)
             .map(|_| bench.host.recv(2000).expect("host answers").expect("open message arrives"))
             .collect();
-        (opened.join().expect("surface.open returns"), messages)
+        let reply = opened.join().expect("surface.open returns");
+        assert!(
+            bench.host.recv(100).expect("host answers").is_none(),
+            "the initial mismatched mirror cannot emit a speculative frame"
+        );
+        let cols = reply["cols"].as_u64().unwrap() as u16;
+        let rows = reply["rows"].as_u64().unwrap() as u16;
+        let first = format!("hi{}", " ".repeat(cols.saturating_sub(2) as usize));
+        let blank = " ".repeat(cols as usize);
+        let mut owned = vec![blank; rows as usize];
+        if let Some(row) = owned.first_mut() {
+            *row = first;
+        }
+        let refs: Vec<_> = owned.iter().map(String::as_str).collect();
+        let mut grid = bench.grid.lock().unwrap();
+        let mut matching = GridMirror::from_rows(cols, &refs);
+        matching.cursor = grid.cursor;
+        matching.cursor_visible = grid.cursor_visible;
+        matching.cursor_style = grid.cursor_style;
+        matching.cursor_animation = grid.cursor_animation;
+        matching.theme_overrides = grid.theme_overrides.clone();
+        *grid = matching;
+        drop(grid);
+        progressed(bench);
+        messages.push(
+            bench.host.recv(2000).expect("host answers").expect("first matching frame arrives"),
+        );
+        (reply, messages)
     })
 }
 
@@ -101,6 +128,51 @@ fn open_answers_cells_and_pushes_hello_ring_and_a_first_frame() {
         }
         other => panic!("expected frameReady, got {other:?}"),
     }
+}
+
+#[test]
+fn first_paint_waits_for_the_terminal_grid_to_match_the_surface_grid() {
+    let bench = bench("grid-handshake");
+    bench.grid.lock().unwrap().strict_bounds = true;
+    let request = json!({
+        "identifier": bench.identifier,
+        "pane": "tab-test.1",
+        "pixelW": 640.0, "pixelH": 480.0, "scale": 2.0,
+        "font": {"family": "Menlo", "pt": 13.0},
+        "theme": theme(),
+    });
+    let reply = bench
+        .sessions
+        .command(
+            "soksak-sidecar-terminal-test",
+            "surface.open",
+            &request,
+            Some((bench.mirror.clone(), bench.signal.clone())),
+        )
+        .expect("surface.open returns its required terminal grid");
+    let cols = reply["cols"].as_u64().unwrap() as u16;
+    let rows = reply["rows"].as_u64().unwrap() as u16;
+    assert_ne!((cols, rows), (8, 2), "fixture must begin with a mismatched grid");
+    assert!(bench.host.recv(2000).unwrap().is_some(), "hello arrives");
+    assert!(bench.host.recv(2000).unwrap().is_some(), "ring arrives");
+    assert!(
+        bench.host.recv(100).unwrap().is_none(),
+        "no frame may read a mirror whose grid has not reached the surface grid"
+    );
+
+    let blank = " ".repeat(cols as usize);
+    let row_refs = vec![blank.as_str(); rows as usize];
+    let mut matching = GridMirror::from_rows(cols, &row_refs);
+    matching.strict_bounds = true;
+    *bench.grid.lock().unwrap() = matching;
+    progressed(&bench);
+
+    let (message, _) = bench
+        .host
+        .recv(2000)
+        .expect("host answers")
+        .expect("the matching grid event produces the first frame");
+    assert!(matches!(message, Message::FrameReady { .. }));
 }
 
 #[test]
