@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use super::atlas::{Atlas, GlyphKey, ATLAS_PAGE_SIZE};
-use super::instances::{apply_cursor, row_instances, GlyphPlacement, GpuCell, Palette};
+use super::instances::{apply_cursor, apply_hollow_cursor, row_instances, GlyphPlacement, GpuCell, Palette};
 use super::native::{AtlasTexture, Canvas, Surface};
 
 /// What one target surface currently shows, row by row. Three ring surfaces
@@ -155,6 +155,7 @@ impl Painter {
         offset: usize,
         preedit: Option<&Preedit>,
         cursor_on: bool,
+        focused: bool,
     ) -> Result<TerminalThemeOverrides, String> {
         let overrides = mirror.theme_overrides();
         let effective_palette = self.base_palette.resolve(&overrides);
@@ -185,6 +186,7 @@ impl Painter {
                     (crate::mirror::TerminalCursorShape::Bar, false) => 0x30,
                     (crate::mirror::TerminalCursorShape::Bar, true) => 0x31,
                 };
+                if !focused { hash ^= 0x40; }
             }
             if preedit_here {
                 let composition = preedit.unwrap();
@@ -201,7 +203,7 @@ impl Painter {
             if self.hashes[row as usize] == Some(hash) {
                 continue;
             }
-            let cursor_cell = if cursor_here { Some((cursor.1, cursor_style)) } else { None };
+            let cursor_cell = if cursor_here { Some((cursor.1, cursor_style, focused)) } else { None };
             let overlay = if preedit_here {
                 Some((preedit.unwrap(), cursor.1))
             } else {
@@ -268,7 +270,7 @@ impl Painter {
         &mut self,
         row: u16,
         cells: &[TerminalCell],
-        cursor: Option<(usize, crate::mirror::TerminalCursorStyle)>,
+        cursor: Option<(usize, crate::mirror::TerminalCursorStyle, bool)>,
         preedit: Option<(&Preedit, usize)>,
         selection: Option<(u16, u16)>,
     ) -> Result<(), String> {
@@ -336,14 +338,18 @@ impl Painter {
                 instance.bg = self.palette.selection_bg;
             }
         }
-        if let Some((col, style)) = cursor.or_else(|| {
+        if let Some((col, style, cursor_focused)) = cursor.or_else(|| {
             preedit_cursor.map(|col| (col, crate::mirror::TerminalCursorStyle {
                 shape: crate::mirror::TerminalCursorShape::Bar,
                 blinking: false,
-            }))
+            }, true))
         }) {
             if col < instances.len() {
-                apply_cursor(&mut instances[col], style, &self.palette);
+                if cursor_focused {
+                    apply_cursor(&mut instances[col], style, &self.palette);
+                } else {
+                    apply_hollow_cursor(&mut instances[col], &self.palette);
+                }
             }
         }
         let base = row as usize * self.cols as usize;

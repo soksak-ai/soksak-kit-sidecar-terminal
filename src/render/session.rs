@@ -46,6 +46,7 @@ struct PaneControl {
     pane: String,
     stop: AtomicBool,
     paused: AtomicBool,
+    focused: AtomicBool,
     dirty: AtomicBool,
     overlay: Mutex<OverlayState>,
     returns: Mutex<Vec<u8>>,
@@ -291,6 +292,7 @@ impl SurfaceSessions {
             "surface.preedit" => self.preedit(request),
             "surface.pointer" => self.pointer(request, wiring),
             "surface.wheel" => self.wheel(request, wiring),
+            "surface.focus" => self.focus(request),
             "surface.scroll" => self.scroll(request, wiring),
             "surface.read" => self.read(request, wiring),
             "surface.close" => self.close(request),
@@ -354,6 +356,8 @@ impl SurfaceSessions {
             "lastError": control.last_error.lock().unwrap().clone(),
             "signalSequence": signal_seq,
             "paused": control.paused.load(Ordering::Acquire),
+            "focused": control.focused.load(Ordering::Acquire),
+            "cursorPresentation": if control.focused.load(Ordering::Acquire) { "engine" } else { "hollow-block" },
             "stopped": control.stop.load(Ordering::Acquire),
             "cursorRow": control.cursor_row.load(Ordering::Acquire),
             "cursorColumn": control.cursor_col.load(Ordering::Acquire),
@@ -370,6 +374,22 @@ impl SurfaceSessions {
             "effectiveTheme": palette_status(&theme.effective),
             "selection": selection,
             "modes": modes,
+        }))
+    }
+
+    fn focus(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let parsed = soksak_contract_surface::decode_focus_request(request)
+            .map_err(|error| refuse("INVALID_PARAMS", error))?;
+        let control = self.control_of(&parsed.pane)?;
+        control.focused.store(parsed.focused, Ordering::Release);
+        if !parsed.focused {
+            control.cursor_phase.store(0, Ordering::Release);
+        }
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        Ok(json!({
+            "focused": parsed.focused,
+            "cursorPresentation": if parsed.focused { "engine" } else { "hollow-block" },
         }))
     }
 
@@ -440,6 +460,7 @@ impl SurfaceSessions {
             pane: pane.clone(),
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            focused: AtomicBool::new(true),
             dirty: AtomicBool::new(true),
             overlay: Mutex::new(OverlayState {
                 cell_css_w: metrics.cell_w / scale,
@@ -1034,10 +1055,11 @@ fn spawn_render_thread(
                     let visible = modes.show_cursor;
                     let style = mirror.cursor_style();
                     let policy = mirror.cursor_animation();
+                    let focused = control.focused.load(Ordering::Acquire);
                     cursor_animation.observe(
                         style,
                         policy,
-                        visible && offset == 0 && preedit_value.is_none(),
+                        visible && focused && offset == 0 && preedit_value.is_none(),
                         output_activity,
                     );
                     control.cursor_row.store(cursor.0 as u16, Ordering::Release);
@@ -1055,7 +1077,8 @@ fn spawn_render_thread(
                         &**mirror,
                         offset,
                         preedit_value.as_ref(),
-                        cursor_animation.cursor_on(),
+                        if focused { cursor_animation.cursor_on() } else { true },
+                        focused,
                     );
                     (cursor, visible, refresh)
                 };
@@ -1264,6 +1287,7 @@ mod tests {
             pane: pane.to_string(),
             stop: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            focused: AtomicBool::new(true),
             dirty: AtomicBool::new(false),
             overlay: Mutex::new(OverlayState::default()),
             returns: Mutex::new(Vec::new()),
