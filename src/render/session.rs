@@ -59,6 +59,7 @@ struct PaneControl {
     cursor_phase: AtomicU8,
     theme: Mutex<SurfaceThemeState>,
     selection: Mutex<soksak_contract_surface::SelectionSnapshot>,
+    modes: Mutex<crate::mirror::TerminalModes>,
 }
 
 #[derive(Default)]
@@ -331,6 +332,8 @@ impl SurfaceSessions {
         let selection = soksak_contract_surface::encode_selection_snapshot(
             &control.selection.lock().unwrap(),
         ).map_err(|error| refuse("SELECTION_STATE_INVALID", error))?;
+        let modes = serde_json::to_value(*control.modes.lock().unwrap())
+            .map_err(|error| refuse("MODE_STATE_INVALID", error.to_string()))?;
         Ok(json!({
             "pane": pane,
             "paints": control.paints.load(Ordering::Acquire),
@@ -354,6 +357,7 @@ impl SurfaceSessions {
             "terminalOverrides": override_status(&theme.overrides),
             "effectiveTheme": palette_status(&theme.effective),
             "selection": selection,
+            "modes": modes,
         }))
     }
 
@@ -442,6 +446,7 @@ impl SurfaceSessions {
             cursor_phase: AtomicU8::new(0),
             theme: Mutex::new(theme.clone()),
             selection: Mutex::new(inactive_selection_snapshot()),
+            modes: Mutex::new(crate::mirror::TerminalModes::default()),
         });
         supersede(&self.panes, &pane, Arc::clone(&control));
         self.fonts
@@ -866,7 +871,9 @@ fn spawn_render_thread(
                 let (cursor, cursor_visible, refresh) = {
                     let mirror = mirror.lock().unwrap();
                     let cursor = mirror.cursor();
-                    let visible = mirror.modes().show_cursor;
+                    let modes = mirror.modes();
+                    *control.modes.lock().unwrap() = modes;
+                    let visible = modes.show_cursor;
                     let style = mirror.cursor_style();
                     let policy = mirror.cursor_animation();
                     cursor_animation.observe(
@@ -1045,6 +1052,7 @@ mod tests {
             cursor_phase: AtomicU8::new(0),
             theme: Mutex::new(test_theme()),
             selection: Mutex::new(inactive_selection_snapshot()),
+            modes: Mutex::new(crate::mirror::TerminalModes::default()),
         })
     }
 

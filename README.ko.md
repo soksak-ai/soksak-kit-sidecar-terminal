@@ -54,6 +54,8 @@ Native selection은 `soksak-contract-surface` 0.0.5를 사용합니다. 공통 m
 begin/update/clear, 선택 text, inclusive row range를 소유하며 generic cell-text fallback은 없습니다.
 Painter는 engine range를 소비해 선언된 selection foreground/background를 적용합니다.
 `surface.selection`은 같은 snapshot을 `surface.state`로 게시하고 mutation일 때만 paint를 깨웁니다.
+같은 state 응답은 engine의 mouse-tracking·alternate-scroll mode 전체를 게시합니다. Plugin은 provider
+이름이나 DOM 위치를 추측하지 않고 이 사실로 gesture를 routing합니다.
 
 ## 검증
 

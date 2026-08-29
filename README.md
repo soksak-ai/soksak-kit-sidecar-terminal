@@ -57,6 +57,8 @@ engine adapter owns begin/update/clear, selected text and inclusive row ranges; 
 fallback exists. The painter consumes those engine ranges and applies the declared selection
 foreground/background. `surface.selection` publishes the same snapshot through `surface.state` and
 wakes a paint only for mutations.
+The same state response publishes the engine's complete mouse-tracking and alternate-scroll modes;
+the Plugin routes gestures from that fact rather than a provider name or DOM-position guess.
 
 ## Verification
 
