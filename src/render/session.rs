@@ -1099,6 +1099,24 @@ mod tests {
     }
 
     #[test]
+    fn surface_wheel_is_a_declared_engine_routed_command() {
+        let sessions = SurfaceSessions::new();
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
+        let error = sessions.command(
+            "engine-a",
+            "surface.wheel",
+            &json!({
+                "window": "win-a", "pane": "tab-a.1",
+                "point": {"x": 12.0, "y": 24.0},
+                "deltaX": 0.0, "deltaY": 1.0, "deltaMode": "line",
+                "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+            }),
+            None,
+        ).expect_err("the missing mirror is still a named refusal");
+        assert_ne!(error.code, "UNKNOWN_COMMAND");
+    }
+
+    #[test]
     fn surface_state_exposes_base_override_and_effective_theme() {
         let sessions = SurfaceSessions::new();
         sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
