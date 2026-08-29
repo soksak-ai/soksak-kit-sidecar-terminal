@@ -13,7 +13,7 @@ base64 = "=0.22.1"
 getrandom = "=0.3.4"
 interprocess = "=2.4.2"
 soksak-contract-control = { git = "https://github.com/soksak-ai/soksak-contract-control", rev = "d37e5c3cc521" }
-soksak-contract-surface = { git = "https://github.com/soksak-ai/soksak-contract-surface", rev = "321ac93c007d3551e30a2a3c6302cded766a6881" }
+soksak-contract-surface = { git = "https://github.com/soksak-ai/soksak-contract-surface", rev = "4bcf917cd104713bf934ee89afb81799466d2f3f" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.10.9"

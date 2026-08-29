@@ -291,5 +291,11 @@ mod tests {
         }, &theme);
         assert_ne!(bar.flags & FLAG_CURSOR_BAR, 0);
         assert_eq!(bar.reserved, theme.cursor);
+
+        let mut hollow = row_instances(&[plain('x')], 12, &theme, &mut |_| Some(slot()))[0];
+        apply_hollow_cursor(&mut hollow, &theme);
+        assert_ne!(hollow.flags & FLAG_CURSOR_HOLLOW, 0);
+        assert_eq!((hollow.fg, hollow.bg), (theme.fg, theme.bg));
+        assert_eq!(hollow.reserved, theme.cursor);
     }
 }

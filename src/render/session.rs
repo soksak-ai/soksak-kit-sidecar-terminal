@@ -1329,6 +1329,31 @@ mod tests {
     }
 
     #[test]
+    fn surface_focus_stops_animation_and_selects_hollow_presentation_without_replacing_engine_style() {
+        let sessions = SurfaceSessions::new();
+        let cursor = control("tab-a.1");
+        cursor.cursor_shape.store(2, Ordering::Release);
+        cursor.cursor_blinking.store(true, Ordering::Release);
+        sessions.panes.lock().unwrap().insert("tab-a.1".into(), cursor);
+
+        let lost = sessions.command(
+            "engine-a", "surface.focus",
+            &json!({ "window": "win-a", "pane": "tab-a.1", "focused": false }), None,
+        ).expect("focus out");
+        assert_eq!(lost["cursorPresentation"], "hollow-block");
+        let state = sessions.state(&json!({ "pane": "tab-a.1" })).expect("surface state");
+        assert_eq!(state["focused"], false);
+        assert_eq!(state["cursorShape"], "bar");
+        assert_eq!(state["cursorBlinking"], true);
+
+        let gained = sessions.command(
+            "engine-a", "surface.focus",
+            &json!({ "window": "win-a", "pane": "tab-a.1", "focused": true }), None,
+        ).expect("focus in");
+        assert_eq!(gained["cursorPresentation"], "engine");
+    }
+
+    #[test]
     fn surface_wheel_is_a_declared_engine_routed_command() {
         let sessions = SurfaceSessions::new();
         sessions.panes.lock().unwrap().insert("tab-a.1".into(), control("tab-a.1"));
