@@ -169,6 +169,7 @@ impl Painter {
         for row in 0..self.rows {
             let line = row as i32 - offset as i32;
             let cells = mirror.line_cells(line);
+            let selection = mirror.selection_range(line);
             let mut hash = row_hash(&cells);
             hash ^= self.palette_revision.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             let preedit_here =
@@ -193,6 +194,10 @@ impl Painter {
                 }
                 hash = hash.wrapping_mul(31).wrapping_add(cursor.1 as u64 + 1);
             }
+            if let Some((start, end)) = selection {
+                hash = hash.wrapping_mul(31).wrapping_add(start as u64 + 1);
+                hash = hash.wrapping_mul(31).wrapping_add(end as u64 + 1);
+            }
             if self.hashes[row as usize] == Some(hash) {
                 continue;
             }
@@ -202,7 +207,7 @@ impl Painter {
             } else {
                 None
             };
-            self.build_row(row, &cells, cursor_cell, overlay)?;
+            self.build_row(row, &cells, cursor_cell, overlay, selection)?;
             self.hashes[row as usize] = Some(hash);
         }
         Ok(overrides)
@@ -265,6 +270,7 @@ impl Painter {
         cells: &[TerminalCell],
         cursor: Option<(usize, crate::mirror::TerminalCursorStyle)>,
         preedit: Option<(&Preedit, usize)>,
+        selection: Option<(u16, u16)>,
     ) -> Result<(), String> {
         let cols = self.cols as usize;
         let mut effective: Vec<TerminalCell> = cells.to_vec();
@@ -322,6 +328,14 @@ impl Painter {
         let mut instances = row_instances(cells, cell_w, &self.palette, &mut glyph);
         instances.truncate(self.cols as usize);
         instances.resize(self.cols as usize, background_only(&self.palette));
+        if let Some((start, end)) = selection {
+            let start = usize::from(start).min(instances.len());
+            let end = usize::from(end).saturating_add(1).min(instances.len());
+            for instance in &mut instances[start..end] {
+                instance.fg = self.palette.selection_fg;
+                instance.bg = self.palette.selection_bg;
+            }
+        }
         if let Some((col, style)) = cursor.or_else(|| {
             preedit_cursor.map(|col| (col, crate::mirror::TerminalCursorStyle {
                 shape: crate::mirror::TerminalCursorShape::Bar,

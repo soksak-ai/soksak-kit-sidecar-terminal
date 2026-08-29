@@ -1,4 +1,8 @@
 use crate::frame::encode_line;
+pub use soksak_contract_surface::{
+    CellSide, SelectionKind, SelectionModifiers, SelectionPhase, SelectionPoint,
+    SelectionRequest, SelectionSnapshot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalColor {
@@ -103,6 +107,13 @@ pub struct TerminalCell {
     pub link: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineSelectionPoint {
+    pub line: i32,
+    pub col: u16,
+    pub side: CellSide,
+}
+
 pub trait TerminalEngine: Send + Sized {
     fn new(cols: u16, rows: u16) -> Self;
     fn initialize(&mut self) {}
@@ -123,6 +134,22 @@ pub trait TerminalEngine: Send + Sized {
     fn history_size(&self) -> usize;
     fn modes(&self) -> TerminalModes;
     fn line_cells(&self, line: i32) -> Vec<TerminalCell>;
+    fn selection_begin(
+        &mut self,
+        kind: SelectionKind,
+        point: EngineSelectionPoint,
+        modifiers: SelectionModifiers,
+    ) -> Result<(), String>;
+    fn selection_update(
+        &mut self,
+        point: EngineSelectionPoint,
+        modifiers: SelectionModifiers,
+    ) -> Result<(), String>;
+    fn selection_clear(&mut self);
+    /// Some means an engine-owned selection exists; the string may be empty for a collapsed begin.
+    fn selection_text(&self) -> Option<String>;
+    /// Inclusive selected columns for one engine line, used directly by the painter.
+    fn selection_range(&self, line: i32) -> Option<(u16, u16)>;
     /// Every viewport row with the view scrolled `offset` rows into history: row `y` is engine
     /// line `y - offset`. `offset` is already clamped by the caller. Engines with a cheaper
     /// consecutive read override this.
@@ -142,6 +169,17 @@ pub struct RecoveryMirror<E: TerminalEngine> {
     engine: E,
     frozen_primary: Option<FrozenPrimary>,
     held: Vec<u8>,
+    selection: SelectionState,
+}
+
+#[derive(Default)]
+struct SelectionState {
+    gesture_id: Option<String>,
+    kind: Option<SelectionKind>,
+    anchor: Option<SelectionPoint>,
+    focus: Option<SelectionPoint>,
+    sequence: u64,
+    open: bool,
 }
 
 /// The viewport as runs. Checkpoints store it; `terminal.frame` derives deltas from it.
@@ -207,6 +245,7 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
             engine,
             frozen_primary: None,
             held: Vec::new(),
+            selection: SelectionState::default(),
         }
     }
 
@@ -322,6 +361,88 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
     }
     pub fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         self.engine.line_cells(line)
+    }
+
+    pub fn selection_command(
+        &mut self,
+        request: &SelectionRequest,
+        offset: usize,
+    ) -> Result<SelectionSnapshot, String> {
+        match request {
+            SelectionRequest::Read { .. } => return Ok(self.selection_snapshot()),
+            SelectionRequest::Clear { .. } => {
+                self.engine.selection_clear();
+                self.selection.gesture_id = None;
+                self.selection.kind = None;
+                self.selection.anchor = None;
+                self.selection.focus = None;
+                self.selection.open = false;
+            }
+            SelectionRequest::Gesture {
+                gesture_id, phase, kind, point, modifiers, ..
+            } => {
+                let engine_point = EngineSelectionPoint {
+                    line: i32::from(point.row)
+                        .saturating_sub(i32::try_from(offset).unwrap_or(i32::MAX)),
+                    col: point.col,
+                    side: point.side,
+                };
+                match phase {
+                    SelectionPhase::Begin => {
+                        self.engine.selection_begin(*kind, engine_point, *modifiers)?;
+                        self.selection.gesture_id = Some(gesture_id.clone());
+                        self.selection.kind = Some(*kind);
+                        self.selection.anchor = Some(*point);
+                        self.selection.focus = Some(*point);
+                        self.selection.open = true;
+                    }
+                    SelectionPhase::Update | SelectionPhase::End => {
+                        if !self.selection.open
+                            || self.selection.gesture_id.as_deref() != Some(gesture_id)
+                        {
+                            return Err("STALE_GESTURE: selection gesture does not own this pane".into());
+                        }
+                        if self.selection.kind != Some(*kind) {
+                            return Err("SELECTION_KIND_CHANGED: gesture kind is immutable".into());
+                        }
+                        self.engine.selection_update(engine_point, *modifiers)?;
+                        self.selection.focus = Some(*point);
+                        if *phase == SelectionPhase::End {
+                            self.selection.open = false;
+                        }
+                    }
+                }
+            }
+        }
+        self.selection.sequence = self.selection.sequence.saturating_add(1);
+        Ok(self.selection_snapshot())
+    }
+
+    pub fn selection_snapshot(&self) -> SelectionSnapshot {
+        match self.engine.selection_text() {
+            Some(text) => SelectionSnapshot {
+                active: true,
+                text,
+                kind: self.selection.kind,
+                anchor: self.selection.anchor,
+                focus: self.selection.focus,
+                gesture_id: self.selection.gesture_id.clone(),
+                sequence: self.selection.sequence,
+            },
+            None => SelectionSnapshot {
+                active: false,
+                text: String::new(),
+                kind: None,
+                anchor: None,
+                focus: None,
+                gesture_id: None,
+                sequence: self.selection.sequence,
+            },
+        }
+    }
+
+    pub fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
+        self.engine.selection_range(line)
     }
 
     /// The viewport scrolled `offset` rows into history. Clamped to the history size; 0 while
@@ -604,11 +725,13 @@ fn cursor_style_set(style: TerminalCursorStyle) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    struct HiddenCursorEngine;
+    struct HiddenCursorEngine {
+        selection: Option<(SelectionKind, EngineSelectionPoint, EngineSelectionPoint)>,
+    }
 
     impl TerminalEngine for HiddenCursorEngine {
         fn new(_: u16, _: u16) -> Self {
-            Self
+            Self { selection: None }
         }
         fn feed(&mut self, _: &[u8]) {}
         fn resize(&mut self, _: u16, _: u16) {}
@@ -642,6 +765,39 @@ mod tests {
         fn line_cells(&self, _: i32) -> Vec<TerminalCell> {
             vec![]
         }
+        fn selection_begin(
+            &mut self, kind: SelectionKind, point: EngineSelectionPoint,
+            _modifiers: SelectionModifiers,
+        ) -> Result<(), String> {
+            self.selection = Some((kind, point, point));
+            Ok(())
+        }
+        fn selection_update(
+            &mut self, point: EngineSelectionPoint, _modifiers: SelectionModifiers,
+        ) -> Result<(), String> {
+            let selection = self.selection.as_mut().ok_or("no selection")?;
+            selection.2 = point;
+            Ok(())
+        }
+        fn selection_clear(&mut self) { self.selection = None; }
+        fn selection_text(&self) -> Option<String> {
+            self.selection.map(|(_, anchor, focus)| {
+                format!("{}:{}-{}:{}", anchor.line, anchor.col, focus.line, focus.col)
+            })
+        }
+        fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
+            let (_, anchor, focus) = self.selection?;
+            let first_line = anchor.line.min(focus.line);
+            let last_line = anchor.line.max(focus.line);
+            if line < first_line || line > last_line { return None; }
+            if anchor.line == focus.line {
+                return Some((anchor.col.min(focus.col), anchor.col.max(focus.col)));
+            }
+            let cols = self.cols();
+            if line == anchor.line { Some((anchor.col, cols.saturating_sub(1))) }
+            else if line == focus.line { Some((0, focus.col)) }
+            else { Some((0, cols.saturating_sub(1))) }
+        }
         fn suppressed_replies(&self) -> u64 {
             0
         }
@@ -661,6 +817,51 @@ mod tests {
             .rehydrate()
             .windows(b"\x1b[6 q".len())
             .any(|bytes| bytes == b"\x1b[6 q"));
+    }
+
+    fn gesture(
+        gesture_id: &str, phase: SelectionPhase, point: SelectionPoint,
+    ) -> SelectionRequest {
+        SelectionRequest::Gesture {
+            window: "win-a".into(), pane: "tab-a.1".into(), gesture_id: gesture_id.into(),
+            phase, kind: SelectionKind::Simple, point, modifiers: SelectionModifiers::default(),
+        }
+    }
+
+    #[test]
+    fn selection_gesture_has_one_owner_sequence_and_engine_range() {
+        let mut mirror = RecoveryMirror::<HiddenCursorEngine>::new(10, 4);
+        let anchor = SelectionPoint { row: 2, col: 3, side: CellSide::Left };
+        let begun = mirror.selection_command(&gesture("sel-1", SelectionPhase::Begin, anchor), 5)
+            .expect("selection begin");
+        assert_eq!(begun.sequence, 1);
+        assert_eq!(begun.text, "-3:3--3:3", "viewport row is translated through offset");
+
+        let focus = SelectionPoint { row: 2, col: 7, side: CellSide::Right };
+        let stale = mirror.selection_command(&gesture("old", SelectionPhase::Update, focus), 5);
+        assert_eq!(stale.unwrap_err(), "STALE_GESTURE: selection gesture does not own this pane");
+        assert_eq!(mirror.selection_snapshot().sequence, 1, "a refusal does not advance state");
+
+        let updated = mirror.selection_command(&gesture("sel-1", SelectionPhase::Update, focus), 5)
+            .expect("selection update");
+        assert_eq!(updated.sequence, 2);
+        assert_eq!(updated.text, "-3:3--3:7");
+        assert_eq!(mirror.selection_range(-3), Some((3, 7)));
+
+        let ended = mirror.selection_command(&gesture("sel-1", SelectionPhase::End, focus), 5)
+            .expect("selection end");
+        assert_eq!(ended.sequence, 3);
+        assert!(mirror.selection_command(&gesture("sel-1", SelectionPhase::Update, focus), 5).is_err());
+
+        let read = mirror.selection_command(
+            &SelectionRequest::Read { window: "win-a".into(), pane: "tab-a.1".into() }, 5,
+        ).expect("selection read");
+        assert_eq!(read.sequence, 3, "read does not mutate selection");
+        let cleared = mirror.selection_command(
+            &SelectionRequest::Clear { window: "win-a".into(), pane: "tab-a.1".into() }, 5,
+        ).expect("selection clear");
+        assert!(!cleared.active);
+        assert_eq!(cleared.sequence, 4);
     }
 
     #[test]
