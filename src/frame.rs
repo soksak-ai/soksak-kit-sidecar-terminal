@@ -305,7 +305,8 @@ mod tests {
     use super::*;
     use crate::mirror::{RecoveryMirror, TerminalEngine};
     use crate::mirror::{
-        TerminalCursorAnimation, TerminalCursorShape, TerminalCursorStyle,
+        EngineSelectionPoint, SelectionKind, SelectionModifiers, TerminalCursorAnimation,
+        TerminalCursorShape, TerminalCursorStyle,
     };
 
     fn cell(ch: char) -> TerminalCell {
@@ -579,6 +580,16 @@ mod tests {
                 .map(|col| cell(text.chars().nth(col).unwrap_or(' ')))
                 .collect()
         }
+        fn selection_begin(
+            &mut self, _kind: SelectionKind, _point: EngineSelectionPoint,
+            _modifiers: SelectionModifiers,
+        ) -> Result<(), String> { Err("fixture has no selection".into()) }
+        fn selection_update(
+            &mut self, _point: EngineSelectionPoint, _modifiers: SelectionModifiers,
+        ) -> Result<(), String> { Err("fixture has no selection".into()) }
+        fn selection_clear(&mut self) {}
+        fn selection_text(&self) -> Option<String> { None }
+        fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
         fn suppressed_replies(&self) -> u64 {
             0
         }

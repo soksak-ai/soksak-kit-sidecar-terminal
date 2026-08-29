@@ -58,12 +58,25 @@ struct PaneControl {
     cursor_interval_ms: AtomicU64,
     cursor_phase: AtomicU8,
     theme: Mutex<SurfaceThemeState>,
+    selection: Mutex<soksak_contract_surface::SelectionSnapshot>,
 }
 
 #[derive(Default)]
 struct OverlayState {
     offset: usize,
     preedit: Option<(String, usize)>,
+}
+
+fn inactive_selection_snapshot() -> soksak_contract_surface::SelectionSnapshot {
+    soksak_contract_surface::SelectionSnapshot {
+        active: false,
+        text: String::new(),
+        kind: None,
+        anchor: None,
+        focus: None,
+        gesture_id: None,
+        sequence: 0,
+    }
 }
 
 struct FontChoice {
@@ -269,8 +282,9 @@ impl SurfaceSessions {
             "surface.read" => self.read(request, wiring),
             "surface.close" => self.close(request),
             "surface.theme" => self.theme(request),
-            "surface.selection" | "surface.hover" => {
-                Err(refuse("NOT_YET_SERVED", format!("{command} arrives with the overlay pass")))
+            "surface.selection" => self.selection(request, wiring),
+            "surface.hover" => {
+                Err(refuse("NOT_YET_SERVED", "surface.hover arrives with the overlay pass"))
             }
             _ => Err(refuse("UNKNOWN_COMMAND", "unknown surface command")),
         }
@@ -314,6 +328,9 @@ impl SurfaceSessions {
             theme.resolve();
             theme.clone()
         };
+        let selection = soksak_contract_surface::encode_selection_snapshot(
+            &control.selection.lock().unwrap(),
+        ).map_err(|error| refuse("SELECTION_STATE_INVALID", error))?;
         Ok(json!({
             "pane": pane,
             "paints": control.paints.load(Ordering::Acquire),
@@ -336,6 +353,7 @@ impl SurfaceSessions {
             "baseTheme": palette_status(&theme.base),
             "terminalOverrides": override_status(&theme.overrides),
             "effectiveTheme": palette_status(&theme.effective),
+            "selection": selection,
         }))
     }
 
@@ -423,6 +441,7 @@ impl SurfaceSessions {
             cursor_interval_ms: AtomicU64::new(0),
             cursor_phase: AtomicU8::new(0),
             theme: Mutex::new(theme.clone()),
+            selection: Mutex::new(inactive_selection_snapshot()),
         });
         supersede(&self.panes, &pane, Arc::clone(&control));
         self.fonts
@@ -540,6 +559,41 @@ impl SurfaceSessions {
         Ok(json!({ "offset": offset, "historySize": history }))
     }
 
+    fn selection(
+        &self,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let (mirror, _) =
+            wiring.ok_or_else(|| refuse("NOT_FOUND", "no live terminal-state mirror for this key"))?;
+        let command = soksak_contract_surface::decode_selection_request(request)
+            .map_err(|error| refuse("INVALID_PARAMS", error))?;
+        let mutated = !matches!(command, soksak_contract_surface::SelectionRequest::Read { .. });
+        let offset = control.overlay.lock().unwrap().offset;
+        let snapshot = mirror
+            .lock()
+            .unwrap()
+            .selection_command(&command, offset)
+            .map_err(|error| {
+                if error.starts_with("STALE_GESTURE:") {
+                    refuse("STALE_GESTURE", error)
+                } else if error.starts_with("SELECTION_KIND_CHANGED:") {
+                    refuse("SELECTION_KIND_CHANGED", error)
+                } else {
+                    refuse("SELECTION_FAILED", error)
+                }
+            })?;
+        *control.selection.lock().unwrap() = snapshot.clone();
+        if mutated {
+            control.dirty.store(true, Ordering::Release);
+            control.wake();
+        }
+        soksak_contract_surface::encode_selection_snapshot(&snapshot)
+            .map_err(|error| refuse("SELECTION_STATE_INVALID", error))
+    }
+
     fn read(
         &self,
         request: &Value,
@@ -615,6 +669,7 @@ fn palette_status(value: &Palette) -> Value {
         "cursor": packed_hex(value.cursor),
         "cursorAccent": packed_hex(value.cursor_accent),
         "selectionBackground": packed_hex(value.selection_bg),
+        "selectionForeground": packed_hex(value.selection_fg),
         "ansi": value.ansi.iter().map(|color| packed_hex(*color)).collect::<Vec<_>>(),
     })
 }
@@ -672,6 +727,7 @@ fn parse_theme(theme: &Value) -> Result<SurfaceThemeState, SurfaceError> {
     let cursor = parse_color(theme, "cursor")?;
     let cursor_accent = parse_color(theme, "cursorAccent")?;
     let selection_bg = parse_color(theme, "selectionBg")?;
+    let selection_fg = parse_color(theme, "selectionFg")?;
     let ansi_values = theme
         .get("ansi")
         .and_then(Value::as_array)
@@ -689,7 +745,7 @@ fn parse_theme(theme: &Value) -> Result<SurfaceThemeState, SurfaceError> {
     }
     Ok(SurfaceThemeState::new(
         mode,
-        Palette { fg, bg, cursor, cursor_accent, selection_bg, ansi },
+        Palette { fg, bg, cursor, cursor_accent, selection_bg, selection_fg, ansi },
     ))
 }
 
@@ -961,6 +1017,7 @@ mod tests {
             cursor: pack_bgra(0x33, 0x33, 0x33, 255),
             cursor_accent: pack_bgra(0xee, 0xee, 0xee, 255),
             selection_bg: pack_bgra(0xbb, 0xbb, 0xbb, 255),
+            selection_fg: pack_bgra(0x11, 0x11, 0x11, 255),
             ansi: [color; 256],
         })
     }
@@ -987,6 +1044,7 @@ mod tests {
             cursor_interval_ms: AtomicU64::new(0),
             cursor_phase: AtomicU8::new(0),
             theme: Mutex::new(test_theme()),
+            selection: Mutex::new(inactive_selection_snapshot()),
         })
     }
 
@@ -1024,6 +1082,8 @@ mod tests {
         assert_eq!((state["cursorRow"].as_u64(), state["cursorColumn"].as_u64()), (Some(3), Some(7)));
         assert_eq!(state["cursorAnimation"]["intervalMs"], 750);
         assert_eq!(state["cursorAnimation"]["phase"], "on");
+        assert_eq!(state["selection"]["active"], false);
+        assert_eq!(state["selection"]["sequence"], 0);
     }
 
     #[test]

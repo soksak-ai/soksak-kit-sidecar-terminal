@@ -1375,11 +1375,18 @@ mod tests {
 
     use super::*;
     use crate::mirror::{
-        FrameLine, FrameRun, TerminalCursorAnimation, TerminalCursorShape,
-        TerminalCursorStyle, TerminalFrame, TerminalModes,
+        FrameLine, FrameRun, SelectionRequest, SelectionSnapshot, TerminalCursorAnimation,
+        TerminalCursorShape, TerminalCursorStyle, TerminalFrame, TerminalModes,
     };
     use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn no_selection() -> SelectionSnapshot {
+        SelectionSnapshot {
+            active: false, text: String::new(), kind: None, anchor: None, focus: None,
+            gesture_id: None, sequence: 0,
+        }
+    }
 
     fn test_root(prefix: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1502,6 +1509,10 @@ mod tests {
         fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
             Vec::new()
         }
+        fn selection_command(
+            &mut self, _request: &SelectionRequest, _offset: usize,
+        ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
+        fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
     }
 
     /// A mirror with a fixed screen; echoes the offset it is asked for so clamping is observable.
@@ -1561,6 +1572,10 @@ mod tests {
         fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
             Vec::new()
         }
+        fn selection_command(
+            &mut self, _request: &SelectionRequest, _offset: usize,
+        ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
+        fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
     }
 
     fn paint_mirror(_cols: u16, _rows: u16) -> Box<dyn TerminalStateMirror> {
@@ -1612,6 +1627,10 @@ mod tests {
         fn line_cells(&self, _line: i32) -> Vec<crate::mirror::TerminalCell> {
             Vec::new()
         }
+        fn selection_command(
+            &mut self, _request: &SelectionRequest, _offset: usize,
+        ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
+        fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
     }
 
     fn test_registry(

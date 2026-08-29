@@ -51,6 +51,13 @@ engine color state through `TerminalStateMirror.theme_overrides`; adapters do no
 `surface.theme` validates one complete replacement base, preserves active engine overrides,
 updates the resize palette and wakes the render thread. It does not reopen the surface or poll.
 
+Native selection uses `soksak-contract-surface` 0.0.5. The common mirror owns gesture identity,
+monotonic sequence, stale-owner refusal, viewport-offset translation and complete snapshots. An
+engine adapter owns begin/update/clear, selected text and inclusive row ranges; no generic cell-text
+fallback exists. The painter consumes those engine ranges and applies the declared selection
+foreground/background. `surface.selection` publishes the same snapshot through `surface.state` and
+wakes a paint only for mutations.
+
 ## Verification
 
 ```sh

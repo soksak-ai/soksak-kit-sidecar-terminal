@@ -49,6 +49,12 @@ Native painter는 host가 명시한 `light|dark` base palette 위에 engine의 O
 `surface.theme`은 완전한 replacement base 하나를 검증하고 active engine override를 보존하며
 resize palette를 갱신한 뒤 render thread를 깨웁니다. Surface를 다시 열거나 polling하지 않습니다.
 
+Native selection은 `soksak-contract-surface` 0.0.5를 사용합니다. 공통 mirror가 gesture identity,
+단조 증가 sequence, stale owner 거부, viewport offset 변환, 완전한 snapshot을 소유합니다. Engine adapter는
+begin/update/clear, 선택 text, inclusive row range를 소유하며 generic cell-text fallback은 없습니다.
+Painter는 engine range를 소비해 선언된 selection foreground/background를 적용합니다.
+`surface.selection`은 같은 snapshot을 `surface.state`로 게시하고 mutation일 때만 paint를 깨웁니다.
+
 ## 검증
 
 ```sh

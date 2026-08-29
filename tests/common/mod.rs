@@ -3,11 +3,18 @@
 
 use soksak_kit_sidecar_terminal::mirror::{
     MirrorCapabilities, TerminalCell, TerminalColor, TerminalCursorAnimation,
-    TerminalCursorShape, TerminalCursorStyle, TerminalFrame, TerminalModes,
-    TerminalThemeOverrides,
+    SelectionRequest, SelectionSnapshot, TerminalCursorShape, TerminalCursorStyle, TerminalFrame,
+    TerminalModes, TerminalThemeOverrides,
 };
 use soksak_kit_sidecar_terminal::render::instances::{pack_bgra, Palette};
 use soksak_kit_sidecar_terminal::TerminalStateMirror;
+
+fn no_selection() -> SelectionSnapshot {
+    SelectionSnapshot {
+        active: false, text: String::new(), kind: None, anchor: None, focus: None,
+        gesture_id: None, sequence: 0,
+    }
+}
 
 pub fn plain(ch: char) -> TerminalCell {
     TerminalCell {
@@ -38,6 +45,7 @@ pub struct GridMirror {
     pub cursor_style: TerminalCursorStyle,
     pub cursor_animation: TerminalCursorAnimation,
     pub theme_overrides: TerminalThemeOverrides,
+    pub selected: Option<(i32, u16, u16)>,
 }
 
 impl GridMirror {
@@ -74,6 +82,7 @@ impl GridMirror {
             cursor_style: TerminalCursorStyle { shape: TerminalCursorShape::Block, blinking: false },
             cursor_animation: TerminalCursorAnimation { interval_ms: 750 },
             theme_overrides: TerminalThemeOverrides::default(),
+            selected: None,
         }
     }
 }
@@ -148,6 +157,14 @@ impl TerminalStateMirror for GridMirror {
         }
         self.grid.get(line as usize).cloned().unwrap_or_default()
     }
+    fn selection_command(
+        &mut self, _request: &SelectionRequest, _offset: usize,
+    ) -> Result<SelectionSnapshot, String> { Ok(no_selection()) }
+    fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
+        self.selected.and_then(|(selected_line, start, end)| {
+            (selected_line == line).then_some((start, end))
+        })
+    }
 }
 
 pub fn palette() -> Palette {
@@ -157,6 +174,7 @@ pub fn palette() -> Palette {
         cursor: pack_bgra(240, 240, 240, 255),
         cursor_accent: pack_bgra(12, 12, 12, 255),
         selection_bg: pack_bgra(60, 60, 60, 255),
+        selection_fg: pack_bgra(255, 255, 255, 255),
         ansi: [pack_bgra(10, 10, 10, 255); 256],
     }
 }
@@ -237,5 +255,13 @@ impl TerminalStateMirror for SharedGrid {
     }
     fn line_cells(&self, line: i32) -> Vec<TerminalCell> {
         self.0.lock().unwrap().line_cells(line)
+    }
+    fn selection_command(
+        &mut self, request: &SelectionRequest, offset: usize,
+    ) -> Result<SelectionSnapshot, String> {
+        self.0.lock().unwrap().selection_command(request, offset)
+    }
+    fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
+        self.0.lock().unwrap().selection_range(line)
     }
 }

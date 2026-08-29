@@ -88,6 +88,34 @@ fn an_unchanged_screen_owes_no_rows() {
 }
 
 #[test]
+fn engine_selection_range_repaints_only_its_cells_with_selection_colors() {
+    let (mut painter, surface, mut state) = painter(8, 1);
+    let mut mirror = GridMirror::from_rows(8, &["        "]);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    mirror.selected = Some((0, 2, 4));
+    let dirty = paint(&mut painter, &surface, &mut state, &mirror);
+    assert_eq!(dirty, vec![0]);
+    let pixels = canvas_read(&painter, &surface);
+    let (cell, (width, _)) = (painter.cell_size(), painter.pixel_size());
+    let pixel = |col: u32| {
+        let x = col * u32::from(cell.0) + u32::from(cell.0) / 2;
+        let y = u32::from(cell.1) / 2;
+        let at = ((y * width + x) * 4) as usize;
+        [pixels[at], pixels[at + 1], pixels[at + 2]]
+    };
+    assert_eq!(pixel(1), [10, 10, 10], "unselected background stays base");
+    assert_eq!(pixel(3), [60, 60, 60], "selected cell uses selection background");
+
+    mirror.selected = None;
+    assert_eq!(paint(&mut painter, &surface, &mut state, &mirror), vec![0]);
+    let cleared = canvas_read(&painter, &surface);
+    let x = 3 * u32::from(cell.0) + u32::from(cell.0) / 2;
+    let y = u32::from(cell.1) / 2;
+    let at = ((y * width + x) * 4) as usize;
+    assert_eq!(&cleared[at..at + 3], &[10, 10, 10]);
+}
+
+#[test]
 fn engine_background_override_repaints_and_reset_restores_the_base() {
     let (mut painter, surface, mut state) = painter(4, 2);
     let mut mirror = GridMirror::from_rows(4, &["    ", "    "]);

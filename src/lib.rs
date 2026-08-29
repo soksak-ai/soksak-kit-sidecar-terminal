@@ -39,6 +39,12 @@ pub trait TerminalStateMirror: Send {
     }
     /// The cells of one viewport row; negative rows reach into history.
     fn line_cells(&self, line: i32) -> Vec<crate::mirror::TerminalCell>;
+    fn selection_command(
+        &mut self,
+        request: &crate::mirror::SelectionRequest,
+        offset: usize,
+    ) -> Result<crate::mirror::SelectionSnapshot, String>;
+    fn selection_range(&self, line: i32) -> Option<(u16, u16)>;
 }
 
 pub type MirrorFactory = fn(cols: u16, rows: u16) -> Box<dyn TerminalStateMirror>;
