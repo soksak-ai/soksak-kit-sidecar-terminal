@@ -1084,6 +1084,10 @@ mod tests {
         assert_eq!(state["cursorAnimation"]["phase"], "on");
         assert_eq!(state["selection"]["active"], false);
         assert_eq!(state["selection"]["sequence"], 0);
+        assert_eq!(state["modes"]["mouseClick"], false);
+        assert_eq!(state["modes"]["mouseDrag"], false);
+        assert_eq!(state["modes"]["mouseMotion"], false);
+        assert_eq!(state["modes"]["alternateScroll"], false);
     }
 
     #[test]
