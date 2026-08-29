@@ -41,6 +41,9 @@ re-parse CSI. Its condition variable has a deadline only while the engine says a
 blinking. Steady or hidden cursors wait only for explicit output/control events, and output activity
 resets the blink phase. The cursor state is present in frames and encrypted checkpoints; the old
 shape-less checkpoint form is not accepted through a compatibility path.
+`surface.focus` changes only presentation: focus loss stops the blink deadline and paints a steady
+hollow block, while the engine-owned shape and blinking value remain in state. Focus gain restores
+that engine presentation. The Metal cursor border is shared by every provider.
 
 The native painter receives one explicit `light|dark` base palette from the host and resolves the
 engine's OSC 4/10/11/12 state over it. A null override means no terminal override: OSC
