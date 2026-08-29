@@ -49,6 +49,10 @@ pub trait TerminalStateMirror: Send {
         &mut self,
         input: crate::mirror::EngineWheelInput,
     ) -> Result<Vec<u8>, String>;
+    fn pointer_input(
+        &mut self,
+        input: crate::mirror::EnginePointerInput,
+    ) -> Result<Vec<u8>, String>;
 }
 
 pub type MirrorFactory = fn(cols: u16, rows: u16) -> Box<dyn TerminalStateMirror>;

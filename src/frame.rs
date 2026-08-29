@@ -305,7 +305,7 @@ mod tests {
     use super::*;
     use crate::mirror::{RecoveryMirror, TerminalEngine};
     use crate::mirror::{
-        EngineSelectionPoint, EngineWheelInput, SelectionKind, SelectionModifiers, TerminalCursorAnimation,
+        EnginePointerInput, EngineSelectionPoint, EngineWheelInput, SelectionKind, SelectionModifiers, TerminalCursorAnimation,
         TerminalCursorShape, TerminalCursorStyle,
     };
 
@@ -592,6 +592,9 @@ mod tests {
         fn selection_range(&self, _line: i32) -> Option<(u16, u16)> { None }
         fn wheel_input(&mut self, _input: EngineWheelInput) -> Result<Vec<u8>, String> {
             Err("fixture has no wheel input".into())
+        }
+        fn pointer_input(&mut self, _input: EnginePointerInput) -> Result<Vec<u8>, String> {
+            Err("fixture has no pointer input".into())
         }
         fn suppressed_replies(&self) -> u64 {
             0

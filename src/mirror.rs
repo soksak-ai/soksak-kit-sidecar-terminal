@@ -1,7 +1,8 @@
 use crate::frame::encode_line;
 pub use soksak_contract_surface::{
-    CellSide, SelectionKind, SelectionModifiers, SelectionPhase, SelectionPoint,
-    SelectionRequest, SelectionSnapshot, WheelEngineResult, WheelRequest, WheelRoute,
+    CellSide, PointerButton, PointerEngineResult, PointerPhase, PointerRequest, PointerRoute,
+    SelectionKind, SelectionModifiers, SelectionPhase, SelectionPoint, SelectionRequest,
+    SelectionSnapshot, WheelEngineResult, WheelRequest, WheelRoute,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +132,16 @@ pub struct EngineWheelInput {
     pub route: EngineWheelRoute,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnginePointerInput {
+    pub row: u16,
+    pub col: u16,
+    pub phase: PointerPhase,
+    pub button: PointerButton,
+    pub click_count: u8,
+    pub modifiers: SelectionModifiers,
+}
+
 pub trait TerminalEngine: Send + Sized {
     fn new(cols: u16, rows: u16) -> Self;
     fn initialize(&mut self) {}
@@ -170,6 +181,7 @@ pub trait TerminalEngine: Send + Sized {
     /// Encode a mode-routed wheel event. The engine adapter owns the protocol bytes; the caller
     /// owns unit normalization and the single PTY writer.
     fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String>;
+    fn pointer_input(&mut self, input: EnginePointerInput) -> Result<Vec<u8>, String>;
     /// Every viewport row with the view scrolled `offset` rows into history: row `y` is engine
     /// line `y - offset`. `offset` is already clamped by the caller. Engines with a cheaper
     /// consecutive read override this.
@@ -463,6 +475,10 @@ impl<E: TerminalEngine> RecoveryMirror<E> {
 
     pub fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String> {
         self.engine.wheel_input(input)
+    }
+
+    pub fn pointer_input(&mut self, input: EnginePointerInput) -> Result<Vec<u8>, String> {
+        self.engine.pointer_input(input)
     }
 
     pub fn selection_range(&self, line: i32) -> Option<(u16, u16)> {
@@ -824,6 +840,9 @@ mod tests {
         }
         fn wheel_input(&mut self, input: EngineWheelInput) -> Result<Vec<u8>, String> {
             Ok(format!("{}:{}:{}:{}", input.row, input.col, input.horizontal, input.vertical).into_bytes())
+        }
+        fn pointer_input(&mut self, input: EnginePointerInput) -> Result<Vec<u8>, String> {
+            Ok(format!("{}:{}:{:?}:{:?}", input.row, input.col, input.phase, input.button).into_bytes())
         }
         fn suppressed_replies(&self) -> u64 {
             0

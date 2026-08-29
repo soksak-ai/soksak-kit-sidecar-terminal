@@ -62,6 +62,11 @@ Native wheel input은 이 Kit이 pane의 실측 cell box로 정규화할 때까�
 engine mode가 mouse report, alternate scroll, scrollback 중 하나를 선택합니다. Input byte는 engine
 adapter만 encode합니다. 이 Kit은 strict surface result로 byte를 반환하며 PTY에는 쓰지 않습니다.
 
+Native pointer input도 같은 실측 cell box를 사용합니다. Shift는 terminal capture를 우회합니다. Press와
+release는 click/drag/motion mode를 따르고, button을 누른 move는 drag 또는 motion mode를 따르며, button
+없는 move는 motion mode에서만 전달됩니다. 선택된 engine adapter가 report를 encode하며 ignored input은
+byte를 반환하지 않습니다.
+
 ## 검증
 
 ```sh

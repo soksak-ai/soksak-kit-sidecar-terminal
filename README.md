@@ -66,6 +66,11 @@ scrollback; otherwise current engine modes choose mouse report, alternate scroll
 The engine adapter alone encodes input bytes. This Kit returns them under the strict surface result
 and never writes the PTY.
 
+Native pointer input uses the same measured cell box. Shift bypasses terminal capture. Press and
+release follow click/drag/motion modes, held movement follows drag or motion mode, and no-button
+movement follows motion mode only. The selected engine adapter encodes the report; ignored input
+returns no bytes.
+
 ## Verification
 
 ```sh

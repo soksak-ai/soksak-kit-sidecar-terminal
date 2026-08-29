@@ -11,8 +11,9 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use soksak_contract_surface::{
-    decode_wheel_request, encode_wheel_engine_result, DamageRect, Message, WheelDeltaMode,
-    WheelEngineResult, WheelRoute,
+    decode_pointer_request, decode_wheel_request, encode_pointer_engine_result,
+    encode_wheel_engine_result, DamageRect, Message, PointerButton, PointerEngineResult,
+    PointerPhase, PointerRoute, WheelDeltaMode, WheelEngineResult, WheelRoute,
 };
 
 use super::channel::SurfaceChannel;
@@ -288,6 +289,7 @@ impl SurfaceSessions {
             "surface.resize" => self.resize(request),
             "surface.setPaused" => self.set_paused(request),
             "surface.preedit" => self.preedit(request),
+            "surface.pointer" => self.pointer(request, wiring),
             "surface.wheel" => self.wheel(request, wiring),
             "surface.scroll" => self.scroll(request, wiring),
             "surface.read" => self.read(request, wiring),
@@ -669,6 +671,55 @@ impl SurfaceSessions {
             route: WheelRoute::Scrollback,
             offset: Some(offset as u64), history_size: Some(history as u64), data_b64: None,
         }).map_err(|error| refuse("WHEEL_STATE_INVALID", error))
+    }
+
+    fn pointer(
+        &self,
+        request: &Value,
+        wiring: Option<(SharedMirror, FrameSignal)>,
+    ) -> Result<Value, SurfaceError> {
+        let request = decode_pointer_request(request)
+            .map_err(|error| refuse("INVALID_PARAMS", error))?;
+        let control = self.control_of(&request.pane)?;
+        let (mirror, _) = wiring
+            .ok_or_else(|| refuse("NOT_FOUND", "no live terminal-state mirror for this key"))?;
+        let (cell_w, cell_h) = {
+            let overlay = control.overlay.lock().unwrap();
+            (overlay.cell_css_w.max(f64::EPSILON), overlay.cell_css_h.max(f64::EPSILON))
+        };
+        let mut mirror = mirror.lock().unwrap();
+        let modes = mirror.modes();
+        let report = if request.modifiers.shift {
+            false
+        } else {
+            match request.phase {
+                PointerPhase::Down | PointerPhase::Up => {
+                    modes.mouse_click || modes.mouse_drag || modes.mouse_motion
+                }
+                PointerPhase::Move if request.button == PointerButton::None => modes.mouse_motion,
+                PointerPhase::Move => modes.mouse_drag || modes.mouse_motion,
+            }
+        };
+        if !report {
+            return encode_pointer_engine_result(&PointerEngineResult {
+                route: PointerRoute::Ignored, data_b64: None,
+            }).map_err(|error| refuse("POINTER_STATE_INVALID", error));
+        }
+        let row = (request.point.y / cell_h).floor()
+            .clamp(0.0, f64::from(mirror.rows().saturating_sub(1))) as u16;
+        let col = (request.point.x / cell_w).floor()
+            .clamp(0.0, f64::from(mirror.cols().saturating_sub(1))) as u16;
+        let bytes = mirror.pointer_input(crate::mirror::EnginePointerInput {
+            row, col, phase: request.phase, button: request.button,
+            click_count: request.click_count, modifiers: request.modifiers,
+        }).map_err(|error| refuse("POINTER_INPUT_FAILED", error))?;
+        if bytes.is_empty() {
+            return Err(refuse("POINTER_INPUT_FAILED", "engine returned empty pointer input"));
+        }
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        encode_pointer_engine_result(&PointerEngineResult {
+            route: PointerRoute::MouseReport, data_b64: Some(data_b64),
+        }).map_err(|error| refuse("POINTER_STATE_INVALID", error))
     }
 
     fn selection(
@@ -1180,6 +1231,12 @@ mod tests {
             self.last = Some(input);
             Ok(format!("{}:{}:{}:{}", input.row, input.col, input.horizontal, input.vertical).into_bytes())
         }
+        fn pointer_input(
+            &mut self,
+            input: crate::mirror::EnginePointerInput,
+        ) -> Result<Vec<u8>, String> {
+            Ok(format!("{}:{}:{:?}:{:?}", input.row, input.col, input.phase, input.button).into_bytes())
+        }
     }
 
     fn wheel_wiring(modes: crate::mirror::TerminalModes, alt: bool, history: usize) -> (SharedMirror, FrameSignal) {
@@ -1305,6 +1362,64 @@ mod tests {
             None,
         ).expect_err("the missing mirror is still a named refusal");
         assert_ne!(error.code, "UNKNOWN_COMMAND");
+    }
+
+    #[test]
+    fn surface_pointer_routes_only_phases_enabled_by_current_mouse_modes() {
+        let sessions = SurfaceSessions::new();
+        let pointer_control = control("tab-pointer.1");
+        {
+            let mut overlay = pointer_control.overlay.lock().unwrap();
+            overlay.cell_css_w = 10.0;
+            overlay.cell_css_h = 20.0;
+            overlay.page_rows = 5;
+        }
+        sessions.panes.lock().unwrap().insert("tab-pointer.1".into(), pointer_control);
+        let click_modes = crate::mirror::TerminalModes {
+            mouse_click: true,
+            ..crate::mirror::TerminalModes::default()
+        };
+        let down = sessions.command(
+            "engine-a", "surface.pointer",
+            &json!({
+                "window": "win-a", "pane": "tab-pointer.1",
+                "point": {"x": 15.0, "y": 25.0},
+                "phase": "down", "button": "left", "clickCount": 1,
+                "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+            }),
+            Some(wheel_wiring(click_modes, false, 0)),
+        ).expect("pointer down");
+        assert_eq!(down["route"], "mouse-report");
+        let encoded = down["dataB64"].as_str().unwrap();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(), b"1:1:Down:Left");
+
+        let shifted = sessions.command(
+            "engine-a", "surface.pointer",
+            &json!({
+                "window": "win-a", "pane": "tab-pointer.1",
+                "point": {"x": 15.0, "y": 25.0},
+                "phase": "down", "button": "left", "clickCount": 1,
+                "modifiers": {"shift": true, "alt": false, "control": false, "meta": false}
+            }),
+            Some(wheel_wiring(click_modes, false, 0)),
+        ).expect("shift pointer");
+        assert_eq!(shifted["route"], "ignored");
+
+        let drag_modes = crate::mirror::TerminalModes {
+            mouse_drag: true,
+            ..crate::mirror::TerminalModes::default()
+        };
+        let free_move = sessions.command(
+            "engine-a", "surface.pointer",
+            &json!({
+                "window": "win-a", "pane": "tab-pointer.1",
+                "point": {"x": 15.0, "y": 25.0},
+                "phase": "move", "button": "none", "clickCount": 0,
+                "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+            }),
+            Some(wheel_wiring(drag_modes, false, 0)),
+        ).expect("free move");
+        assert_eq!(free_move["route"], "ignored");
     }
 
     #[test]
