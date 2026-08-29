@@ -12,6 +12,11 @@ validates it once, and publishes it in the protocol-2 announcement and greeting.
 public process inventory and monitoring only; it does not change component identity, sockets,
 dependencies, ownership, or the operating system's executable-derived process name.
 
+`SOKSAK_SIDECAR_NAME` identifies the current service's materialized process and owns its service
+socket/token. `SOKSAK_SIDECAR_BINDINGS` is the environment-selected component-id to process-name
+map; the PTY client resolves `soksak-sidecar-pty` from that map. Own identity and peer discovery are
+separate facts and neither is inferred from the executable path.
+
 Live handoff snapshots publish mirror paint and its absolute PTY output sequence atomically. A
 snapshot can therefore be followed by `pty.attachLease` without replaying or dropping bytes.
 Checkpoint commits are serialized per pane across threads and processes. Their

@@ -27,13 +27,24 @@ fn other(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
 
-fn sidecar_name() -> io::Result<String> {
-    std::env::var(soksak_contract_control::SIDECAR_NAME_ENVIRONMENT)
-        .map_err(|_| other("PTY sidecar name is not declared"))
+fn pty_sidecar_name() -> io::Result<String> {
+    let raw = std::env::var(soksak_contract_control::SIDECAR_BINDINGS_ENVIRONMENT)
+        .map_err(|_| other("Sidecar dependency bindings are not declared"))?;
+    pty_sidecar_name_from_bindings(&raw)
+}
+
+fn pty_sidecar_name_from_bindings(raw: &str) -> io::Result<String> {
+    let bindings: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
+        .map_err(|error| other(format!("Sidecar dependency bindings are invalid: {error}")))?;
+    bindings
+        .get(proto::PTY_SIDECAR_NAME)
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .ok_or_else(|| other("PTY sidecar binding is not declared"))
 }
 
 fn read_token(runtime_root: &Path) -> io::Result<String> {
-    let path = proto::pty_token_path(runtime_root, &sidecar_name()?);
+    let path = proto::pty_token_path(runtime_root, &pty_sidecar_name()?);
     let token = std::fs::read_to_string(&path).map_err(|error| {
         other(format!(
             "PTY token unreadable at {}: {error}",
@@ -48,7 +59,7 @@ fn read_token(runtime_root: &Path) -> io::Result<String> {
 }
 
 fn connect(runtime_root: &Path) -> io::Result<(RecvHalf, SendHalf)> {
-    let name = sidecar_name()?;
+    let name = pty_sidecar_name()?;
     let path = proto::pty_socket_path(runtime_root, &name);
     let name = crate::transport_name::local_name(&path)?;
     Stream::connect(name)
@@ -482,5 +493,17 @@ mod tests {
     fn refuses_a_malformed_observation_frame() {
         assert!(decode_observation_frame(2, &[0; 11]).is_err());
         assert!(decode_observation_frame(99, &[]).is_err());
+    }
+
+    #[test]
+    fn pty_peer_comes_from_dependency_bindings_not_the_current_sidecar_name() {
+        assert_eq!(
+            pty_sidecar_name_from_bindings(
+                r#"{"soksak-sidecar-pty":"soksakv7-sidecar-pty","soksak-sidecar-terminal-alacritty":"soksakv7-sidecar-terminal-alacritty"}"#,
+            )
+            .unwrap(),
+            "soksakv7-sidecar-pty",
+        );
+        assert!(pty_sidecar_name_from_bindings(r#"{"soksak-sidecar-terminal-alacritty":"soksakv7-sidecar-terminal-alacritty"}"#).is_err());
     }
 }

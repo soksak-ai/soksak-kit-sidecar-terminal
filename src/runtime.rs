@@ -1191,6 +1191,7 @@ pub fn run_service(
 ) -> io::Result<()> {
     let (home, runtime_root) = parse_roots(arguments)?;
     let process_label = process_label_from_environment()?;
+    let sidecar_name = sidecar_name_from_environment()?;
     let runtime = Runtime::connect(
         home,
         runtime_root.clone(),
@@ -1198,10 +1199,10 @@ pub fn run_service(
         process_label.clone(),
         factory,
     )?;
-    let listener = bind_service(&runtime_root, sidecar_id)?;
-    let token = load_or_create_token(&runtime_root, sidecar_id)?;
+    let listener = bind_service(&runtime_root, &sidecar_name)?;
+    let token = load_or_create_token(&runtime_root, &sidecar_name)?;
     let announcement = soksak_contract_control::announcement(
-        &proto::service_socket_path(&runtime_root, sidecar_id),
+        &proto::service_socket_path(&runtime_root, &sidecar_name),
         &process_label,
         Some(&token),
     )
@@ -1218,6 +1219,13 @@ fn process_label_from_environment() -> io::Result<String> {
     soksak_contract_control::parse_process_label(&value)
         .map(str::to_owned)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process label"))
+}
+
+fn sidecar_name_from_environment() -> io::Result<String> {
+    std::env::var(soksak_contract_control::SIDECAR_NAME_ENVIRONMENT)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "own sidecar name is not declared"))
 }
 
 fn parse_roots(arguments: impl IntoIterator<Item = String>) -> io::Result<(PathBuf, PathBuf)> {
