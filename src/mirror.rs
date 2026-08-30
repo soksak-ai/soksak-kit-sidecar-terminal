@@ -865,6 +865,39 @@ mod tests {
             .any(|bytes| bytes == b"\x1b[6 q"));
     }
 
+    fn modes_with_json_flag(flag: &str) -> TerminalModes {
+        let mut value = serde_json::to_value(TerminalModes::default()).unwrap();
+        value[flag] = serde_json::Value::Bool(true);
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn terminal_modes_distinguish_dec_9_x10_and_dec_1001_highlight_tracking() {
+        let x10 = modes_with_json_flag("mouseX10");
+        let highlight = modes_with_json_flag("mouseHighlight");
+
+        assert_ne!(x10, highlight, "DEC 9 and DEC 1001 are distinct engine states");
+        assert_eq!(serde_json::to_value(x10).unwrap()["mouseX10"], true);
+        assert_eq!(serde_json::to_value(highlight).unwrap()["mouseHighlight"], true);
+    }
+
+    #[test]
+    fn rehydrate_generates_dec_9_and_dec_1001_without_mouse_mode_aliases() {
+        let cases = [
+            ("mouseX10", b"\x1b[?9h".as_slice()),
+            ("mouseHighlight", b"\x1b[?1001h".as_slice()),
+        ];
+        for (flag, expected) in cases {
+            let generated = mode_sets(modes_with_json_flag(flag));
+            assert!(generated.windows(expected.len()).any(|bytes| bytes == expected),
+                "{flag} must generate its own DECSET sequence");
+            for alias in [b"\x1b[?1000h".as_slice(), b"\x1b[?1002h", b"\x1b[?1003h"] {
+                assert!(!generated.windows(alias.len()).any(|bytes| bytes == alias),
+                    "{flag} must not generate an existing mouse mode");
+            }
+        }
+    }
+
     fn gesture(
         gesture_id: &str, phase: SelectionPhase, point: SelectionPoint,
     ) -> SelectionRequest {

@@ -1506,6 +1506,36 @@ mod tests {
     }
 
     #[test]
+    fn surface_wheel_selects_mouse_report_for_dec_9_and_dec_1001_modes() {
+        let sessions = SurfaceSessions::new();
+        let wheel_control = control("tab-wheel-modes.1");
+        {
+            let mut overlay = wheel_control.overlay.lock().unwrap();
+            overlay.cell_css_w = 10.0;
+            overlay.cell_css_h = 20.0;
+            overlay.page_rows = 5;
+        }
+        sessions.panes.lock().unwrap().insert("tab-wheel-modes.1".into(), wheel_control);
+
+        for flag in ["mouseX10", "mouseHighlight"] {
+            let mut value = serde_json::to_value(crate::mirror::TerminalModes::default()).unwrap();
+            value[flag] = serde_json::Value::Bool(true);
+            let modes = serde_json::from_value(value).unwrap();
+            let result = sessions.command(
+                "engine-a", "surface.wheel",
+                &json!({
+                    "window": "win-a", "pane": "tab-wheel-modes.1",
+                    "point": {"x": 15.0, "y": 25.0},
+                    "deltaX": 0.0, "deltaY": -1.0, "deltaMode": "line",
+                    "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+                }),
+                Some(wheel_wiring(modes, false, 20)),
+            ).expect("wheel route");
+            assert_eq!(result["route"], "mouse-report", "{flag} must select the engine route");
+        }
+    }
+
+    #[test]
     fn surface_scroll_positive_lines_move_into_history_and_negative_lines_move_to_bottom() {
         let sessions = SurfaceSessions::new();
         sessions.panes.lock().unwrap().insert("tab-scroll.1".into(), control("tab-scroll.1"));
