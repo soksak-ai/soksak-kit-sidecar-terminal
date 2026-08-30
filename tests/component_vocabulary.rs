@@ -88,8 +88,8 @@ fn repository_owns_public_metadata() {
         "sdk_release_sha256:",
         "rust-toolchain.toml",
         "python-version-file: component/.python-version",
-        "node-version-file: ${{ runner.temp }}/spec-package/package.json",
-        "mkdir -p \"$RUNNER_TEMP/spec-package\"",
+        "node-version-file: tooling/spec-package/package.json",
+        "mkdir -p \"$GITHUB_WORKSPACE/tooling/spec-package\"",
         "make attest",
         "soksak-soksak-spec-*.tgz",
     ] {
