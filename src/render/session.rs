@@ -593,7 +593,7 @@ impl SurfaceSessions {
         let wanted = if let Some(offset) = request.get("offset").and_then(Value::as_i64) {
             offset
         } else if let Some(lines) = request.get("lines").and_then(Value::as_i64) {
-            current - lines
+            current + lines
         } else if let Some(edge) = request.get("edge").and_then(Value::as_str) {
             match edge {
                 "top" => history as i64,
@@ -1469,6 +1469,27 @@ mod tests {
             Some(wheel_wiring(drag_modes, false, 0)),
         ).expect("free move");
         assert_eq!(free_move["route"], "ignored");
+    }
+
+    #[test]
+    fn surface_scroll_positive_lines_move_into_history_and_negative_lines_move_to_bottom() {
+        let sessions = SurfaceSessions::new();
+        sessions.panes.lock().unwrap().insert("tab-scroll.1".into(), control("tab-scroll.1"));
+        let wiring = || Some(wheel_wiring(crate::mirror::TerminalModes::default(), false, 20));
+
+        let into_history = sessions.command(
+            "engine-a", "surface.scroll",
+            &json!({"pane": "tab-scroll.1", "lines": 10}),
+            wiring(),
+        ).expect("scroll into history");
+        assert_eq!(into_history["offset"], 10);
+
+        let toward_bottom = sessions.command(
+            "engine-a", "surface.scroll",
+            &json!({"pane": "tab-scroll.1", "lines": -3}),
+            wiring(),
+        ).expect("scroll toward bottom");
+        assert_eq!(toward_bottom["offset"], 7);
     }
 
     #[test]
