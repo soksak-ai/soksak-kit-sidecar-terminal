@@ -10,6 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use interprocess::local_socket::{Listener, ListenerOptions, Stream, prelude::*};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::checkpoint::{CheckpointStore, KEY_ENV, key_from_base64};
 use crate::daemon::{
@@ -45,6 +46,11 @@ struct SessionState {
     frame_subscribers: Arc<Mutex<FrameSubscribers>>,
     frames_consumed: Arc<AtomicU64>,
     consumer_note: Arc<Mutex<String>>,
+    observed_output_bytes: u64,
+    last_output_from_sequence: Option<u64>,
+    last_output_through_sequence: Option<u64>,
+    last_output_bytes: u64,
+    last_output_sha256: Option<String>,
 }
 
 fn new_session_state(
@@ -72,6 +78,11 @@ fn new_session_state(
         frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
         frames_consumed: Arc::new(AtomicU64::new(0)),
         consumer_note: Arc::new(Mutex::new(String::from("starting"))),
+        observed_output_bytes: 0,
+        last_output_from_sequence: None,
+        last_output_through_sequence: None,
+        last_output_bytes: 0,
+        last_output_sha256: None,
     }
 }
 
@@ -114,6 +125,11 @@ fn status_snapshot(registry: &Registry, capabilities: MirrorCapabilities) -> Val
                 "suppressedReplies": state.suppressed_replies,
                 "framesConsumed": state.frames_consumed.load(Ordering::Acquire),
                 "consumerNote": state.consumer_note.lock().unwrap().clone(),
+                "observedOutputBytes": state.observed_output_bytes,
+                "lastOutputFromSequence": state.last_output_from_sequence,
+                "lastOutputThroughSequence": state.last_output_through_sequence,
+                "lastOutputBytes": state.last_output_bytes,
+                "lastOutputSha256": state.last_output_sha256,
             })
         })
         .collect();
@@ -817,10 +833,12 @@ fn apply_observation(
     match frame {
         ObservationFrame::Output {
             event_sequence,
+            from_sequence,
             through_sequence,
             bytes,
-            ..
         } => {
+            let byte_count = bytes.len() as u64;
+            let byte_sha256 = format!("{:x}", Sha256::digest(&bytes));
             let mirror_output_sequence = {
                 let states = registry.lock().unwrap();
                 let Some(state) = states.get(key) else {
@@ -846,6 +864,11 @@ fn apply_observation(
             }
             state.source_event_sequence = event_sequence;
             state.source_output_sequence = through_sequence;
+            state.observed_output_bytes = state.observed_output_bytes.saturating_add(byte_count);
+            state.last_output_from_sequence = Some(from_sequence);
+            state.last_output_through_sequence = Some(through_sequence);
+            state.last_output_bytes = byte_count;
+            state.last_output_sha256 = Some(byte_sha256);
             state.alt_active = alt_active;
             state.suppressed_replies = suppressed_replies;
             let (sequence, ready) = &*state.frame_signal;
@@ -1365,6 +1388,11 @@ mod tests {
             frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
             frames_consumed: Arc::new(AtomicU64::new(0)),
             consumer_note: Arc::new(Mutex::new(String::from("starting"))),
+            observed_output_bytes: 0,
+            last_output_from_sequence: None,
+            last_output_through_sequence: None,
+            last_output_bytes: 0,
+            last_output_sha256: None,
         };
         let continued = continue_state(old, fresh);
         assert!(Arc::ptr_eq(&continued.frame_signal, &old.frame_signal));
@@ -1677,6 +1705,11 @@ mod tests {
                 frame_subscribers: Arc::new(Mutex::new(FrameSubscribers::default())),
                 frames_consumed: Arc::new(AtomicU64::new(0)),
                 consumer_note: Arc::new(Mutex::new(String::from("starting"))),
+                observed_output_bytes: 0,
+                last_output_from_sequence: None,
+                last_output_through_sequence: None,
+                last_output_bytes: 0,
+                last_output_sha256: None,
             },
         )])));
         (key, registry)
@@ -1925,6 +1958,35 @@ mod tests {
         release_send.send(()).unwrap();
         assert!(applying.join().unwrap());
         assert_eq!(snapshot.join().unwrap().1, 37);
+    }
+
+    #[test]
+    fn status_exposes_the_exact_bytes_applied_from_each_output_observation() {
+        let mirror = scripted(0, false);
+        let (key, registry) = test_registry(&mirror, Arc::new(AtomicU64::new(0)), (4, 1));
+        assert!(apply_observation(
+            ObservationFrame::Output {
+                event_sequence: 8,
+                from_sequence: 41,
+                through_sequence: 44,
+                bytes: b"xyz".to_vec(),
+            },
+            &mirror,
+            &registry,
+            &key,
+            1,
+            None,
+        ));
+        let status = status_snapshot(&registry, MirrorCapabilities::default());
+        let session = &status["sessions"][0];
+        assert_eq!(session["observedOutputBytes"], 3);
+        assert_eq!(session["lastOutputFromSequence"], 41);
+        assert_eq!(session["lastOutputThroughSequence"], 44);
+        assert_eq!(session["lastOutputBytes"], 3);
+        assert_eq!(
+            session["lastOutputSha256"],
+            "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282",
+        );
     }
 
     #[test]

@@ -91,4 +91,6 @@ SHA-256 and run this same command; they do not checkout or rebuild spec source.
 
 Terminal status reports each recovery mirror's last observed columns, rows, source event sequence,
 absolute output sequence, and gap count. Callers use these facts to identify the first boundary that
-did not advance.
+did not advance. It also reports cumulative observed output bytes and the last output observation's
+source range, byte count, and SHA-256. A sequence that advances without matching observed bytes is
+therefore a directly visible source-delivery defect rather than an apparently successful frame.

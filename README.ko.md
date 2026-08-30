@@ -70,6 +70,11 @@ release는 click/drag/motion mode를 따르고, button을 누른 move는 drag �
 없는 move는 motion mode에서만 전달됩니다. 선택된 engine adapter가 report를 encode하며 ignored input은
 byte를 반환하지 않습니다.
 
+Terminal status는 각 recovery mirror의 마지막 cols, rows, source event sequence, absolute output
+sequence, gap count를 게시합니다. 또한 누적 관측 output byte 수와 마지막 output observation의 source
+range, byte 수, SHA-256을 게시합니다. 따라서 sequence만 전진하고 실제 byte가 맞지 않는 source delivery
+결함을 성공한 frame처럼 오판하지 않고 직접 관측할 수 있습니다.
+
 ## 검증
 
 ```sh
