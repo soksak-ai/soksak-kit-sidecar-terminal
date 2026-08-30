@@ -340,8 +340,8 @@ dependencies = [
 
 [[package]]
 name = "soksak-contract-surface"
-version = "0.0.8"
-source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=4bcf917cd104713bf934ee89afb81799466d2f3f#4bcf917cd104713bf934ee89afb81799466d2f3f"
+version = "0.0.9"
+source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=f3c3b22#f3c3b22f780850cb222e5eeb862eff59518766eb"
 dependencies = [
  "base64",
  "serde",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "soksak-kit-sidecar-terminal"
-version = "0.0.31"
+version = "0.0.32"
 dependencies = [
  "aes-gcm",
  "base64",

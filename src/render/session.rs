@@ -285,6 +285,7 @@ impl SurfaceSessions {
         wiring: Option<(SharedMirror, FrameSignal)>,
     ) -> Result<Value, SurfaceError> {
         match command {
+            "surface.measure" => self.measure(request),
             "surface.open" => self.open(sidecar_id, request, wiring),
             "surface.state" => self.state(request),
             "surface.resize" => self.resize(request),
@@ -303,6 +304,21 @@ impl SurfaceSessions {
             }
             _ => Err(refuse("UNKNOWN_COMMAND", "unknown surface command")),
         }
+    }
+
+    fn measure(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let request = soksak_contract_surface::decode_measure_request(request)
+            .map_err(|error| refuse("INVALID_PARAMS", error))?;
+        let canvas = self.canvas()?;
+        let metrics = canvas
+            .font_metrics(&request.font.family, request.font.pt, request.scale)
+            .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
+        let (cols, rows) = grid_for(
+            request.pixel_w, request.pixel_h, request.scale, metrics.cell_w, metrics.cell_h,
+        );
+        serde_json::to_value(soksak_contract_surface::MeasureResult {
+            cols, rows, cell_w: metrics.cell_w, cell_h: metrics.cell_h,
+        }).map_err(|error| refuse("MEASURE_STATE_INVALID", error.to_string()))
     }
 
     fn pane_of(&self, request: &Value) -> Result<String, SurfaceError> {
@@ -1323,6 +1339,24 @@ mod tests {
         assert!(first.stop.load(Ordering::Acquire), "the old thread is told to stop");
         assert!(!second.stop.load(Ordering::Acquire));
         assert!(Arc::ptr_eq(panes.lock().unwrap().get("tab-a.1").unwrap(), &second));
+    }
+
+    #[test]
+    fn surface_measure_returns_the_initial_grid_without_creating_a_pane() {
+        let sessions = SurfaceSessions::new();
+        let measured = sessions.command(
+            "engine-a", "surface.measure",
+            &json!({
+                "pixelW": 989.0, "pixelH": 468.0, "scale": 2.0,
+                "font": { "family": "Menlo", "pt": 13.0 }
+            }), None,
+        ).expect("measure without a mirror");
+        assert!(measured["cols"].as_u64().is_some_and(|value| value > 0));
+        assert!(measured["rows"].as_u64().is_some_and(|value| value > 0));
+        assert!(measured["cellW"].as_f64().is_some_and(|value| value > 0.0));
+        assert!(measured["cellH"].as_f64().is_some_and(|value| value > 0.0));
+        assert!(sessions.panes.lock().unwrap().is_empty());
+        assert!(sessions.fonts.lock().unwrap().is_empty());
     }
 
     #[test]
