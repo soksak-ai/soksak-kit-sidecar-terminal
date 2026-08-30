@@ -33,7 +33,7 @@ jobs:
         working-directory: component
         run: |
           case "${{ inputs.spec_url }}" in
-            https://github.com/soksak-ai/soksak-spec/releases/download/v*/soksak-ai-plugin-spec-*.tgz) ;;
+            https://github.com/soksak-ai/soksak-spec/releases/download/v*/soksak-soksak-spec-*.tgz) ;;
             *) echo "spec_url is not an immutable soksak-spec release asset" >&2; exit 1 ;;
           esac
           digest="${{ inputs.spec_sha256 }}"
