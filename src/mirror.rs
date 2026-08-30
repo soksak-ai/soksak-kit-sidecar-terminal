@@ -69,7 +69,11 @@ pub struct TerminalModes {
     pub bracketed_paste: bool,
     pub app_cursor: bool,
     pub app_keypad: bool,
+    /// DEC private mode 9. Reports button presses, but not releases or motion.
+    pub mouse_x10: bool,
     pub mouse_click: bool,
+    /// DEC private mode 1001. Press/release handling remains engine-owned.
+    pub mouse_highlight: bool,
     pub mouse_drag: bool,
     pub mouse_motion: bool,
     pub sgr_mouse: bool,
@@ -79,6 +83,29 @@ pub struct TerminalModes {
     pub show_cursor: bool,
     pub line_wrap: bool,
     pub insert: bool,
+}
+
+impl TerminalModes {
+    /// Whether a wheel event must be offered to the engine's live mouse encoder.
+    pub fn mouse_reporting(self) -> bool {
+        self.mouse_x10
+            || self.mouse_click
+            || self.mouse_highlight
+            || self.mouse_drag
+            || self.mouse_motion
+    }
+
+    /// Whether this pointer phase is admitted to the engine under the current tracking mode.
+    pub fn reports_pointer(self, phase: PointerPhase, button: PointerButton) -> bool {
+        match phase {
+            PointerPhase::Down => self.mouse_reporting(),
+            PointerPhase::Up => {
+                self.mouse_click || self.mouse_highlight || self.mouse_drag || self.mouse_motion
+            }
+            PointerPhase::Move if button == PointerButton::None => self.mouse_motion,
+            PointerPhase::Move => self.mouse_drag || self.mouse_motion,
+        }
+    }
 }
 
 /// What the engine behind a mirror can report on a cell. Published once in `terminal.status`.
@@ -730,7 +757,9 @@ fn mode_sets(modes: TerminalModes) -> Vec<u8> {
         (modes.bracketed_paste, "\x1b[?2004h"),
         (modes.app_cursor, "\x1b[?1h"),
         (modes.app_keypad, "\x1b="),
+        (modes.mouse_x10, "\x1b[?9h"),
         (modes.mouse_click, "\x1b[?1000h"),
+        (modes.mouse_highlight, "\x1b[?1001h"),
         (modes.mouse_drag, "\x1b[?1002h"),
         (modes.mouse_motion, "\x1b[?1003h"),
         (modes.sgr_mouse, "\x1b[?1006h"),
@@ -896,6 +925,31 @@ mod tests {
                     "{flag} must not generate an existing mouse mode");
             }
         }
+    }
+
+    #[test]
+    fn rehydrate_keeps_existing_mode_generation_unchanged() {
+        let modes = TerminalModes {
+            bracketed_paste: true,
+            app_cursor: true,
+            app_keypad: true,
+            mouse_click: true,
+            mouse_drag: true,
+            mouse_motion: true,
+            sgr_mouse: true,
+            utf8_mouse: true,
+            focus_in_out: true,
+            alternate_scroll: true,
+            show_cursor: true,
+            line_wrap: true,
+            insert: true,
+            ..TerminalModes::default()
+        };
+        assert_eq!(
+            mode_sets(modes),
+            b"\x1b[?2004h\x1b[?1h\x1b=\x1b[?1000h\x1b[?1002h\x1b[?1003h\
+              \x1b[?1006h\x1b[?1005h\x1b[?1004h\x1b[4h\x1b[?1007h",
+        );
     }
 
     fn gesture(

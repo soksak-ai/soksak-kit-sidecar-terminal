@@ -62,6 +62,11 @@ foreground/background. `surface.selection` publishes the same snapshot through `
 wakes a paint only for mutations.
 The same state response publishes the engine's complete mouse-tracking and alternate-scroll modes;
 the Plugin routes gestures from that fact rather than a provider name or DOM-position guess.
+DEC private mode 9 X10 tracking and private mode 1001 highlight tracking are independent public
+facts (`mouseX10` and `mouseHighlight`). Neither is represented by setting click, drag or motion
+tracking. Every live tracking fact can select the engine-owned wheel-report route; X10 pointer
+routing is press-only, while highlight routing admits press and release for provider-native
+encoding.
 
 Native wheel input keeps pixel/line/page units until this Kit normalizes them against the pane's
 measured cell box. Fractional pixel deltas stay in a per-pane accumulator. Shift forces local
@@ -69,10 +74,10 @@ scrollback; otherwise current engine modes choose mouse report, alternate scroll
 The engine adapter alone encodes input bytes. This Kit returns them under the strict surface result
 and never writes the PTY.
 
-Native pointer input uses the same measured cell box. Shift bypasses terminal capture. Press and
-release follow click/drag/motion modes, held movement follows drag or motion mode, and no-button
-movement follows motion mode only. The selected engine adapter encodes the report; ignored input
-returns no bytes.
+Native pointer input uses the same measured cell box. Shift bypasses terminal capture. Press follows
+every tracking mode. Release follows highlight/click/drag/motion modes but not X10, held movement
+follows drag or motion mode, and no-button movement follows motion mode only. The selected engine
+adapter encodes the report; ignored input returns no bytes.
 
 ## Verification
 

@@ -59,16 +59,21 @@ Painter는 engine range를 소비해 선언된 selection foreground/background�
 `surface.selection`은 같은 snapshot을 `surface.state`로 게시하고 mutation일 때만 paint를 깨웁니다.
 같은 state 응답은 engine의 mouse-tracking·alternate-scroll mode 전체를 게시합니다. Plugin은 provider
 이름이나 DOM 위치를 추측하지 않고 이 사실로 gesture를 routing합니다.
+DEC private mode 9 X10 tracking과 private mode 1001 highlight tracking은 각각 독립된 공개 사실
+(`mouseX10`, `mouseHighlight`)입니다. 둘 중 어느 것도 click·drag·motion tracking을 켜서 대신
+표현하지 않습니다. 활성 tracking 사실은 모두 engine 소유 wheel-report 경로를 선택할 수 있습니다.
+X10 pointer routing은 press만 허용하고 highlight routing은 provider-native encoding을 위해 press와
+release를 허용합니다.
 
 Native wheel input은 이 Kit이 pane의 실측 cell box로 정규화할 때까지 pixel/line/page 단위를 유지합니다.
 분수 pixel delta는 pane별 accumulator에 남습니다. Shift는 local scrollback을 강제하고, 그 외에는 현재
 engine mode가 mouse report, alternate scroll, scrollback 중 하나를 선택합니다. Input byte는 engine
 adapter만 encode합니다. 이 Kit은 strict surface result로 byte를 반환하며 PTY에는 쓰지 않습니다.
 
-Native pointer input도 같은 실측 cell box를 사용합니다. Shift는 terminal capture를 우회합니다. Press와
-release는 click/drag/motion mode를 따르고, button을 누른 move는 drag 또는 motion mode를 따르며, button
-없는 move는 motion mode에서만 전달됩니다. 선택된 engine adapter가 report를 encode하며 ignored input은
-byte를 반환하지 않습니다.
+Native pointer input도 같은 실측 cell box를 사용합니다. Shift는 terminal capture를 우회합니다. Press는
+모든 tracking mode를 따릅니다. Release는 highlight/click/drag/motion mode를 따르지만 X10에서는 전달하지
+않습니다. Button을 누른 move는 drag 또는 motion mode를 따르며 button 없는 move는 motion mode에서만
+전달됩니다. 선택된 engine adapter가 report를 encode하며 ignored input은 byte를 반환하지 않습니다.
 
 Terminal status는 각 recovery mirror의 마지막 cols, rows, source event sequence, absolute output
 sequence, gap count를 게시합니다. 또한 누적 관측 output byte 수와 마지막 output observation의 source

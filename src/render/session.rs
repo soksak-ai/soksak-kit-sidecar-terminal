@@ -12,8 +12,8 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use soksak_contract_surface::{
     decode_pointer_request, decode_wheel_request, encode_pointer_engine_result,
-    encode_wheel_engine_result, DamageRect, Message, PointerButton, PointerEngineResult,
-    PointerPhase, PointerRoute, WheelDeltaMode, WheelEngineResult, WheelRoute,
+    encode_wheel_engine_result, DamageRect, Message, PointerEngineResult, PointerRoute,
+    WheelDeltaMode, WheelEngineResult, WheelRoute,
 };
 
 use super::channel::SurfaceChannel;
@@ -666,8 +666,7 @@ impl SurfaceSessions {
         }
         let mut mirror = mirror.lock().unwrap();
         let modes = mirror.modes();
-        let mouse_reporting = modes.mouse_click || modes.mouse_drag || modes.mouse_motion;
-        let engine_route = if !request.modifiers.shift && mouse_reporting {
+        let engine_route = if !request.modifiers.shift && modes.mouse_reporting() {
             Some((crate::mirror::EngineWheelRoute::MouseReport, WheelRoute::MouseReport))
         } else if !request.modifiers.shift && mirror.alt_active() && modes.alternate_scroll {
             Some((crate::mirror::EngineWheelRoute::AlternateScroll, WheelRoute::AlternateScroll))
@@ -729,13 +728,7 @@ impl SurfaceSessions {
         let report = if request.modifiers.shift {
             false
         } else {
-            match request.phase {
-                PointerPhase::Down | PointerPhase::Up => {
-                    modes.mouse_click || modes.mouse_drag || modes.mouse_motion
-                }
-                PointerPhase::Move if request.button == PointerButton::None => modes.mouse_motion,
-                PointerPhase::Move => modes.mouse_drag || modes.mouse_motion,
-            }
+            modes.reports_pointer(request.phase, request.button)
         };
         if !report {
             return encode_pointer_engine_result(&PointerEngineResult {
@@ -1380,7 +1373,9 @@ mod tests {
         assert_eq!(state["cursorAnimation"]["phase"], "on");
         assert_eq!(state["selection"]["active"], false);
         assert_eq!(state["selection"]["sequence"], 0);
+        assert_eq!(state["modes"]["mouseX10"], false);
         assert_eq!(state["modes"]["mouseClick"], false);
+        assert_eq!(state["modes"]["mouseHighlight"], false);
         assert_eq!(state["modes"]["mouseDrag"], false);
         assert_eq!(state["modes"]["mouseMotion"], false);
         assert_eq!(state["modes"]["alternateScroll"], false);
@@ -1503,6 +1498,32 @@ mod tests {
             Some(wheel_wiring(drag_modes, false, 0)),
         ).expect("free move");
         assert_eq!(free_move["route"], "ignored");
+
+        let pointer_route = |phase: &str, modes| {
+            sessions.command(
+                "engine-a", "surface.pointer",
+                &json!({
+                    "window": "win-a", "pane": "tab-pointer.1",
+                    "point": {"x": 15.0, "y": 25.0},
+                    "phase": phase, "button": "left", "clickCount": 1,
+                    "modifiers": {"shift": false, "alt": false, "control": false, "meta": false}
+                }),
+                Some(wheel_wiring(modes, false, 0)),
+            ).expect("pointer route")["route"].clone()
+        };
+        let x10_modes = crate::mirror::TerminalModes {
+            mouse_x10: true,
+            ..crate::mirror::TerminalModes::default()
+        };
+        assert_eq!(pointer_route("down", x10_modes), "mouse-report");
+        assert_eq!(pointer_route("up", x10_modes), "ignored", "X10 is press-only");
+
+        let highlight_modes = crate::mirror::TerminalModes {
+            mouse_highlight: true,
+            ..crate::mirror::TerminalModes::default()
+        };
+        assert_eq!(pointer_route("down", highlight_modes), "mouse-report");
+        assert_eq!(pointer_route("up", highlight_modes), "mouse-report");
     }
 
     #[test]
