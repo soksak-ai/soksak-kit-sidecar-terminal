@@ -33,7 +33,7 @@ require-out:
 	@test "$(OUT)" != "$(CURDIR)" || { echo 'OUT must not replace the source repository' >&2; exit 64; }
 
 release: require-tooling require-out verify
-	@test -z "$$(git status --porcelain)" || { echo 'release source checkout must be clean' >&2; exit 65; }
+	@dirty="$$(git status --porcelain)"; test -z "$$dirty" || { printf '%s\n' "$$dirty" >&2; echo 'release source checkout must be clean' >&2; exit 65; }
 	@"$(SDK_ROOT)/bin/soksak-sdk" package --root "$(CURDIR)" \
 		--spec-root "$(SDK_ROOT)/.dependencies/soksak-spec" \
 		--commit "$$(git rev-parse --verify HEAD)" --out "$(OUT)"
