@@ -1,4 +1,5 @@
 use std::{fs, path::Path};
+use std::collections::BTreeSet;
 
 #[test]
 fn source_names_sidecars_directly() {
@@ -111,6 +112,30 @@ fn repository_does_not_ship_an_unconsumed_pty_downloader() {
     assert!(!release_files.contains("install_pty_release"));
     let makefile = fs::read_to_string("Makefile").expect("read Makefile");
     assert!(!makefile.contains("test_install_pty_release"));
+}
+
+#[test]
+fn portable_release_inventory_contains_every_compiled_source() {
+    let inventory: BTreeSet<String> = serde_json::from_str::<Vec<String>>(
+        &fs::read_to_string("release-files.json").expect("read release files"),
+    ).expect("parse release files").into_iter().collect();
+    let mut required = vec![String::from("build.rs")];
+    collect_compiled_sources(Path::new("src"), &mut required);
+    let missing: Vec<_> = required.into_iter()
+        .filter(|path| !inventory.contains(path))
+        .collect();
+    assert!(missing.is_empty(), "portable release omits compiled sources: {missing:?}");
+}
+
+fn collect_compiled_sources(directory: &Path, output: &mut Vec<String>) {
+    for entry in fs::read_dir(directory).expect("read compiled source directory") {
+        let path = entry.expect("compiled source entry").path();
+        if path.is_dir() {
+            collect_compiled_sources(&path, output);
+        } else if matches!(path.extension().and_then(|value| value.to_str()), Some("rs" | "m" | "h")) {
+            output.push(display(&path));
+        }
+    }
 }
 
 fn display(path: &Path) -> String {
