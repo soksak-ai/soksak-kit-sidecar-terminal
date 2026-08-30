@@ -11,6 +11,22 @@ on:
         description: SHA-256 of the exact soksak-spec package
         required: true
         type: string
+      sdk_archive_url:
+        description: Exact immutable soksak-sdk archive URL from the release train
+        required: true
+        type: string
+      sdk_archive_sha256:
+        description: SHA-256 of the exact soksak-sdk archive
+        required: true
+        type: string
+      sdk_release_url:
+        description: Exact immutable soksak-sdk release.json URL
+        required: true
+        type: string
+      sdk_release_sha256:
+        description: SHA-256 of the exact soksak-sdk release.json
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -47,6 +63,31 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version-file: component/.dependency/spec-package/package.json
+      - name: Materialize the exact SDK release
+        working-directory: component
+        run: |
+          case "${{ inputs.sdk_archive_url }}" in
+            https://github.com/soksak-ai/soksak-sdk/releases/download/v*/soksak-sdk-*-any.tgz) ;;
+            *) echo "sdk_archive_url is not an immutable SDK release asset" >&2; exit 1 ;;
+          esac
+          case "${{ inputs.sdk_release_url }}" in
+            https://github.com/soksak-ai/soksak-sdk/releases/download/v*/release.json) ;;
+            *) echo "sdk_release_url is not an immutable SDK release document" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/soksak-sdk"
+          curl -fsSL "${{ inputs.sdk_archive_url }}" -o "$RUNNER_TEMP/soksak-sdk.tgz"
+          curl -fsSL "${{ inputs.sdk_release_url }}" -o "$RUNNER_TEMP/soksak-sdk-release.json"
+          archive_sha="$(sha256sum "$RUNNER_TEMP/soksak-sdk.tgz" | awk '{print $1}')"
+          release_sha="$(sha256sum "$RUNNER_TEMP/soksak-sdk-release.json" | awk '{print $1}')"
+          test "$archive_sha" = "${{ inputs.sdk_archive_sha256 }}"
+          test "$release_sha" = "${{ inputs.sdk_release_sha256 }}"
+          declared_archive_sha="$(node -e 'const fs=require("fs");const r=JSON.parse(fs.readFileSync(process.argv[1]));process.stdout.write(r.artifacts[0].sha256)' "$RUNNER_TEMP/soksak-sdk-release.json")"
+          test "$declared_archive_sha" = "$archive_sha"
+          tar -xzf "$RUNNER_TEMP/soksak-sdk.tgz" -C "$RUNNER_TEMP/soksak-sdk" --strip-components=1
+          test -z "$(find "$RUNNER_TEMP/soksak-sdk" -type l -print -quit)"
+          locked_spec_sha="$(node -e 'const fs=require("fs");const r=JSON.parse(fs.readFileSync(process.argv[1]));process.stdout.write(r.reference.sha256)' "$RUNNER_TEMP/soksak-sdk/sdk-spec.lock.json")"
+          test "$locked_spec_sha" = "${{ inputs.spec_sha256 }}"
+          "$RUNNER_TEMP/soksak-sdk/bin/soksak-sdk" prepare
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version-file: component/.python-version
@@ -57,9 +98,7 @@ jobs:
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
       - working-directory: component
-        run: make verify
-      - working-directory: component
-        run: node .dependency/spec-package/release-template/build-portable-release.mjs --commit "${{ github.sha }}" --out "$GITHUB_WORKSPACE/artifacts"
+        run: make attest OUT="$GITHUB_WORKSPACE/artifacts" SDK_ROOT="$RUNNER_TEMP/soksak-sdk" SDK_RELEASE="$RUNNER_TEMP/soksak-sdk-release.json"
       - id: release-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
