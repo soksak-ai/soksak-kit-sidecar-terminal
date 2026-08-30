@@ -55,14 +55,14 @@ jobs:
           digest="${{ inputs.spec_sha256 }}"
           test "${#digest}" -eq 64
           case "$digest" in *[!a-f0-9]*) echo "spec_sha256 is invalid" >&2; exit 1 ;; esac
-          mkdir -p "$RUNNER_TEMP/spec-package"
-          curl -fsSL "${{ inputs.spec_url }}" -o "$RUNNER_TEMP/soksak-spec.tgz"
-          test "$(sha256sum "$RUNNER_TEMP/soksak-spec.tgz" | awk '{print $1}')" = "$digest"
-          tar -xzf "$RUNNER_TEMP/soksak-spec.tgz" -C "$RUNNER_TEMP/spec-package" --strip-components=1
-          test -z "$(find "$RUNNER_TEMP/spec-package" -type l -print -quit)"
+          mkdir -p "$GITHUB_WORKSPACE/tooling/spec-package"
+          curl -fsSL "${{ inputs.spec_url }}" -o "$GITHUB_WORKSPACE/tooling/soksak-spec.tgz"
+          test "$(sha256sum "$GITHUB_WORKSPACE/tooling/soksak-spec.tgz" | awk '{print $1}')" = "$digest"
+          tar -xzf "$GITHUB_WORKSPACE/tooling/soksak-spec.tgz" -C "$GITHUB_WORKSPACE/tooling/spec-package" --strip-components=1
+          test -z "$(find "$GITHUB_WORKSPACE/tooling/spec-package" -type l -print -quit)"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version-file: ${{ runner.temp }}/spec-package/package.json
+          node-version-file: tooling/spec-package/package.json
       - name: Materialize the exact SDK release
         working-directory: component
         run: |
