@@ -91,6 +91,7 @@ fn repository_owns_public_metadata() {
         "node-version-file: tooling/spec-package/package.json",
         "mkdir -p \"$GITHUB_WORKSPACE/tooling/spec-package\"",
         "make attest",
+        "$GITHUB_WORKSPACE/tooling/spec-package/release-template/publish-canonical-release.mjs",
         "soksak-soksak-spec-*.tgz",
     ] {
         assert!(workflow.contains(required), "workflow omits {required}");
@@ -105,6 +106,7 @@ fn repository_owns_public_metadata() {
         "soksak-ai-plugin-spec-*.tgz",
         ".dependency/spec-package/release-template/build-portable-release.mjs",
         "mkdir -p .dependency/spec-package",
+        ".dependency/spec-package/release-template/publish-canonical-release.mjs",
     ] {
         assert!(
             !workflow.contains(forbidden),
