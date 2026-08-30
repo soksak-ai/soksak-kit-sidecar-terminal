@@ -88,7 +88,8 @@ fn repository_owns_public_metadata() {
         "sdk_release_sha256:",
         "rust-toolchain.toml",
         "python-version-file: component/.python-version",
-        "node-version-file: component/.dependency/spec-package/package.json",
+        "node-version-file: ${{ runner.temp }}/spec-package/package.json",
+        "mkdir -p \"$RUNNER_TEMP/spec-package\"",
         "make attest",
         "soksak-soksak-spec-*.tgz",
     ] {
@@ -103,6 +104,7 @@ fn repository_owns_public_metadata() {
         "cargo test --locked",
         "soksak-ai-plugin-spec-*.tgz",
         ".dependency/spec-package/release-template/build-portable-release.mjs",
+        "mkdir -p .dependency/spec-package",
     ] {
         assert!(
             !workflow.contains(forbidden),
