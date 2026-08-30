@@ -61,7 +61,10 @@ fn repository_owns_public_metadata() {
     let workflow =
         fs::read_to_string(".github/workflows/release.yml").expect("read release workflow");
     let makefile = fs::read_to_string("Makefile").expect("read Makefile");
-    for target in ["preflight:", "lock:", "prepare:", "build:", "verify:"] {
+    for target in [
+        "preflight:", "lock:", "prepare:", "build:", "verify:",
+        "require-tooling:", "require-out:", "release:", "attest:",
+    ] {
         assert!(makefile.contains(target), "Makefile omits {target}");
     }
     assert!(
@@ -79,11 +82,14 @@ fn repository_owns_public_metadata() {
     for required in [
         "spec_url:",
         "spec_sha256:",
+        "sdk_archive_url:",
+        "sdk_archive_sha256:",
+        "sdk_release_url:",
+        "sdk_release_sha256:",
         "rust-toolchain.toml",
         "python-version-file: component/.python-version",
         "node-version-file: component/.dependency/spec-package/package.json",
-        "make verify",
-        ".dependency/spec-package/release-template/build-portable-release.mjs",
+        "make attest",
         "soksak-soksak-spec-*.tgz",
     ] {
         assert!(workflow.contains(required), "workflow omits {required}");
@@ -96,6 +102,7 @@ fn repository_owns_public_metadata() {
         "pnpm install --frozen-lockfile",
         "cargo test --locked",
         "soksak-ai-plugin-spec-*.tgz",
+        ".dependency/spec-package/release-template/build-portable-release.mjs",
     ] {
         assert!(
             !workflow.contains(forbidden),
@@ -103,6 +110,12 @@ fn repository_owns_public_metadata() {
         );
     }
     assert!(workflow.contains("owner-enforced immutable releases must be enabled"));
+    for required in [
+        "SDK_VERSION := 0.0.19", "SDK_ROOT", "SDK_RELEASE", "OUT",
+        "soksak-sdk\" package", "soksak-sdk\" attest",
+    ] {
+        assert!(makefile.contains(required), "Makefile omits release boundary {required}");
+    }
 }
 
 #[test]
