@@ -84,6 +84,7 @@ fn repository_owns_public_metadata() {
         "node-version-file: component/.dependency/spec-package/package.json",
         "make verify",
         ".dependency/spec-package/release-template/build-portable-release.mjs",
+        "soksak-soksak-spec-*.tgz",
     ] {
         assert!(workflow.contains(required), "workflow omits {required}");
     }
@@ -94,6 +95,7 @@ fn repository_owns_public_metadata() {
         "version: \"10.30.3\"",
         "pnpm install --frozen-lockfile",
         "cargo test --locked",
+        "soksak-ai-plugin-spec-*.tgz",
     ] {
         assert!(
             !workflow.contains(forbidden),
