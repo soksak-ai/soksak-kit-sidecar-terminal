@@ -115,16 +115,24 @@ fn repository_does_not_ship_an_unconsumed_pty_downloader() {
 }
 
 #[test]
-fn portable_release_inventory_contains_every_compiled_source() {
+fn portable_release_inventory_contains_every_build_and_verification_input() {
     let inventory: BTreeSet<String> = serde_json::from_str::<Vec<String>>(
         &fs::read_to_string("release-files.json").expect("read release files"),
     ).expect("parse release files").into_iter().collect();
-    let mut required = vec![String::from("build.rs")];
+    let mut required = [
+        ".github/workflows/release.yml",
+        ".python-version",
+        "Makefile",
+        "build.rs",
+        "release-files.json",
+        "rust-toolchain.toml",
+        "scripts/check-build-environment.sh",
+    ].into_iter().map(String::from).collect();
     collect_compiled_sources(Path::new("src"), &mut required);
     let missing: Vec<_> = required.into_iter()
         .filter(|path| !inventory.contains(path))
         .collect();
-    assert!(missing.is_empty(), "portable release omits compiled sources: {missing:?}");
+    assert!(missing.is_empty(), "portable release omits build or verification inputs: {missing:?}");
 }
 
 fn collect_compiled_sources(directory: &Path, output: &mut Vec<String>) {
