@@ -46,7 +46,7 @@ fn stage(root: &Path) -> UnixListener {
 // the connection is not, and the request reaches it by connecting again.
 #[test]
 fn a_request_on_an_ended_connection_reaches_the_unit_again() {
-    unsafe { std::env::set_var("SOKSAK_SIDECAR_BINDINGS", "{\"soksak-sidecar-pty\":\"soksak-sidecar-pty\"}"); }
+    unsafe { std::env::set_var("SOKSAK_SIDECAR_BINDINGS", "{\"soksak-spec-sidecar-pty\":\"soksak-sidecar-pty\"}"); }
     let home = std::env::temp_dir().join(format!("soksak-reconnect-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).expect("home");

@@ -12,8 +12,8 @@ announcement와 greeting에 게시합니다. 이 label은 공개 process invento
 identity, socket, dependency, ownership 또는 executable에서 도출되는 운영체제 process 이름을 바꾸지 않습니다.
 
 `SOKSAK_SIDECAR_NAME`은 현재 service의 materialized process를 식별하고 자기 service socket·token을
-소유합니다. `SOKSAK_SIDECAR_BINDINGS`는 environment가 선택한 component id와 process name의 대응이며,
-PTY client는 그 대응에서 `soksak-sidecar-pty`를 찾습니다. 자기 identity와 peer discovery는 서로 다른
+소유합니다. `SOKSAK_SIDECAR_BINDINGS`는 environment가 선택한 interface id와 process name의 대응이며,
+PTY client는 그 대응에서 `soksak-spec-sidecar-pty`를 찾습니다. 자기 identity와 peer discovery는 서로 다른
 사실이고 executable path에서 추측하지 않습니다.
 
 Live handoff snapshot은 mirror paint와 절대 PTY output sequence를 원자적으로 게시합니다. 따라서

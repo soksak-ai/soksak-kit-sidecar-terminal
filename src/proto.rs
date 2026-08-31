@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 pub const PTY_PROTOCOL_VERSION: u32 = 1;
-pub const PTY_SIDECAR_NAME: &str = "soksak-sidecar-pty";
+pub const PTY_INTERFACE_ID: &str = "soksak-spec-sidecar-pty";
 
 pub const OBSERVATION_FRAME_OUTPUT: u8 = 0;
 pub const OBSERVATION_FRAME_GAP: u8 = 1;
@@ -67,7 +67,7 @@ mod tests {
     fn endpoints_name_the_installed_sidecars() {
         let runtime = Path::new("/runtime");
         assert_eq!(
-            pty_socket_path(runtime, PTY_SIDECAR_NAME),
+            pty_socket_path(runtime, "soksak-sidecar-pty"),
             "/runtime/soksak-sidecar-pty-p1.sock"
         );
         assert_eq!(

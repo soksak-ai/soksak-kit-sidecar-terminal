@@ -37,7 +37,7 @@ fn pty_sidecar_name_from_bindings(raw: &str) -> io::Result<String> {
     let bindings: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
         .map_err(|error| other(format!("Sidecar dependency bindings are invalid: {error}")))?;
     bindings
-        .get(proto::PTY_SIDECAR_NAME)
+        .get(proto::PTY_INTERFACE_ID)
         .filter(|name| !name.is_empty())
         .cloned()
         .ok_or_else(|| other("PTY sidecar binding is not declared"))
@@ -499,11 +499,11 @@ mod tests {
     fn pty_peer_comes_from_dependency_bindings_not_the_current_sidecar_name() {
         assert_eq!(
             pty_sidecar_name_from_bindings(
-                r#"{"soksak-sidecar-pty":"soksakv7-sidecar-pty","soksak-sidecar-terminal-alacritty":"soksakv7-sidecar-terminal-alacritty"}"#,
+                r#"{"soksak-spec-sidecar-pty":"soksakv7-sidecar-pty","soksak-spec-sidecar-terminal":"soksakv7-sidecar-terminal-alacritty"}"#,
             )
             .unwrap(),
             "soksakv7-sidecar-pty",
         );
-        assert!(pty_sidecar_name_from_bindings(r#"{"soksak-sidecar-terminal-alacritty":"soksakv7-sidecar-terminal-alacritty"}"#).is_err());
+        assert!(pty_sidecar_name_from_bindings(r#"{"soksak-spec-sidecar-terminal":"soksakv7-sidecar-terminal-alacritty"}"#).is_err());
     }
 }
