@@ -28,19 +28,16 @@ fn other(message: impl Into<String>) -> io::Error {
 }
 
 fn pty_sidecar_name() -> io::Result<String> {
-    let raw = std::env::var(soksak_contract_control::SIDECAR_BINDINGS_ENVIRONMENT)
-        .map_err(|_| other("Sidecar dependency bindings are not declared"))?;
-    pty_sidecar_name_from_bindings(&raw)
+    let name = std::env::var(soksak_contract_control::PTY_DEPENDENCY_NAME_ENVIRONMENT)
+        .map_err(|_| other("PTY dependency process is not declared"))?;
+    parse_dependency_process_name(&name)
 }
 
-fn pty_sidecar_name_from_bindings(raw: &str) -> io::Result<String> {
-    let bindings: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
-        .map_err(|error| other(format!("Sidecar dependency bindings are invalid: {error}")))?;
-    bindings
-        .get(proto::PTY_SIDECAR_NAME)
-        .filter(|name| !name.is_empty())
-        .cloned()
-        .ok_or_else(|| other("PTY sidecar binding is not declared"))
+fn parse_dependency_process_name(name: &str) -> io::Result<String> {
+    if name.is_empty() {
+        return Err(other("PTY dependency process is empty"));
+    }
+    Ok(name.to_owned())
 }
 
 fn read_token(runtime_root: &Path) -> io::Result<String> {
@@ -496,14 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn pty_peer_comes_from_dependency_bindings_not_the_current_sidecar_name() {
-        assert_eq!(
-            pty_sidecar_name_from_bindings(
-                r#"{"soksak-sidecar-pty":"soksakv7-sidecar-pty","soksak-sidecar-terminal-alacritty":"soksakv7-sidecar-terminal-alacritty"}"#,
-            )
-            .unwrap(),
-            "soksakv7-sidecar-pty",
-        );
-        assert!(pty_sidecar_name_from_bindings(r#"{"soksak-sidecar-terminal-alacritty":"soksakv7-sidecar-terminal-alacritty"}"#).is_err());
+    fn pty_peer_comes_from_the_declared_dependency_process() {
+        assert_eq!(parse_dependency_process_name("soksakv7-sidecar-pty").unwrap(), "soksakv7-sidecar-pty");
+        assert!(parse_dependency_process_name("").is_err());
     }
 }

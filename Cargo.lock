@@ -332,7 +332,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "soksak-contract-control"
 version = "0.0.5"
-source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=d37e5c3cc521#d37e5c3cc521f64ed54bc07500937838640258b4"
+source = "git+https://github.com/soksak-ai/soksak-contract-control?rev=d37e5c3cc521#51a4b7cbb3696daac86e07a52fcfcded0ceb34f2"
 dependencies = [
  "serde",
  "sha2",
