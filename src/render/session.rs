@@ -813,6 +813,7 @@ impl SurfaceSessions {
                     continue;
                 }
                 line.push(cell.ch);
+                line.extend(cell.zerowidth.iter());
             }
             text.push_str(line.trim_end());
             text.push('\n');
@@ -1211,6 +1212,7 @@ mod tests {
         alt: bool,
         history: usize,
         last: Option<crate::mirror::EngineWheelInput>,
+        cells: Vec<crate::mirror::TerminalCell>,
     }
 
     impl crate::TerminalStateMirror for WheelMirror {
@@ -1247,7 +1249,9 @@ mod tests {
         fn cursor_animation(&self) -> crate::mirror::TerminalCursorAnimation {
             crate::mirror::TerminalCursorAnimation { interval_ms: 0 }
         }
-        fn line_cells(&self, _: i32) -> Vec<crate::mirror::TerminalCell> { Vec::new() }
+        fn line_cells(&self, _: i32) -> Vec<crate::mirror::TerminalCell> {
+            self.cells.clone()
+        }
         fn selection_command(
             &mut self,
             _: &crate::mirror::SelectionRequest,
@@ -1273,7 +1277,13 @@ mod tests {
 
     fn wheel_wiring(modes: crate::mirror::TerminalModes, alt: bool, history: usize) -> (SharedMirror, FrameSignal) {
         (
-            Arc::new(Mutex::new(Box::new(WheelMirror { modes, alt, history, last: None }))),
+            Arc::new(Mutex::new(Box::new(WheelMirror {
+                modes,
+                alt,
+                history,
+                last: None,
+                cells: Vec::new(),
+            }))),
             Arc::new((Mutex::new(0), Condvar::new())),
         )
     }
@@ -1379,6 +1389,52 @@ mod tests {
         assert_eq!(state["modes"]["mouseDrag"], false);
         assert_eq!(state["modes"]["mouseMotion"], false);
         assert_eq!(state["modes"]["alternateScroll"], false);
+    }
+
+    #[test]
+    fn surface_read_preserves_zero_width_codepoints() {
+        let sessions = SurfaceSessions::new();
+        sessions
+            .panes
+            .lock()
+            .unwrap()
+            .insert("tab-read.1".into(), control("tab-read.1"));
+        let cell = crate::mirror::TerminalCell {
+            ch: 'e',
+            fg: crate::mirror::TerminalColor::Default,
+            bg: crate::mirror::TerminalColor::Default,
+            bold: false,
+            dim: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+            strikeout: false,
+            hidden: false,
+            wide: false,
+            spacer: false,
+            wrapline: false,
+            zerowidth: vec!['\u{301}'],
+            link: None,
+        };
+        let wiring: (SharedMirror, FrameSignal) = (
+            Arc::new(Mutex::new(Box::new(WheelMirror {
+                modes: crate::mirror::TerminalModes::default(),
+                alt: false,
+                history: 0,
+                last: None,
+                cells: vec![cell],
+            }))),
+            Arc::new((Mutex::new(0), Condvar::new())),
+        );
+        let result = sessions
+            .command(
+                "engine-a",
+                "surface.read",
+                &json!({"pane": "tab-read.1", "lines": 1}),
+                Some(wiring),
+            )
+            .expect("surface read");
+        assert_eq!(result["text"], "e\u{301}\n");
     }
 
     #[test]
