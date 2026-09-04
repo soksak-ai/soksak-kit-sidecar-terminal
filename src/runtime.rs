@@ -185,6 +185,21 @@ impl Runtime {
         })
     }
 
+    /// What the owner has stored for this session, or none when it has stored nothing.
+    ///
+    /// A read that fails is none: the mirror still restores from the replay, and a restore that
+    /// refused to start because a note could not be read would trade the work for the note.
+    fn recorded_modes(&self, session: u64) -> Option<Vec<u8>> {
+        let answer = self
+            .control
+            .lock()
+            .unwrap()
+            .request("pty.modes", json!({ "session": session }))
+            .ok()?;
+        let encoded = answer.get("report")?.as_str()?;
+        B64.decode(encoded).ok().filter(|report| !report.is_empty())
+    }
+
     fn subscribe(&self, info: SessionInfo, cols: u16, rows: u16) -> io::Result<bool> {
         let key = (info.window_label.clone(), info.pane_id.clone());
         if self.registry.lock().unwrap().contains_key(&key) {
@@ -192,6 +207,7 @@ impl Runtime {
         }
         let observation = ObservationStream::subscribe(&self.runtime_root, info.session)?;
         self.claim_checkpoint_generation(&key, info.generation)?;
+        let recorded = self.recorded_modes(info.session);
         let mirror = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
@@ -199,6 +215,7 @@ impl Runtime {
             cols,
             rows,
             None,
+            recorded.as_deref(),
         );
         self.registry.lock().unwrap().insert(
             key.clone(),
@@ -319,6 +336,7 @@ impl Runtime {
     ) -> io::Result<()> {
         let key = (info.window_label.clone(), info.pane_id.clone());
         self.claim_checkpoint_generation(&key, info.generation)?;
+        let recorded = self.recorded_modes(info.session);
         let fresh = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
@@ -326,6 +344,7 @@ impl Runtime {
             cols,
             rows,
             Some(observation.generation()),
+            recorded.as_deref(),
         );
         // A key already held keeps its shared mirror arc — the render thread
         // holds it — and the fresh content replaces what is inside it.
@@ -385,8 +404,9 @@ impl Runtime {
                 ),
             }
         };
+        let modes = Some(start_mode_worker(self.control.clone(), observation.session()));
         std::thread::spawn(move || {
-            consume_observations(observation, mirror, registry, key, checkpoint, frames, note)
+            consume_observations(observation, mirror, registry, key, checkpoint, frames, note, modes)
         });
     }
 
@@ -668,8 +688,16 @@ fn create_session_mirror(
     cols: u16,
     rows: u16,
     expected_generation: Option<u64>,
+    recorded_modes: Option<&[u8]>,
 ) -> SharedMirror {
     let mut mirror = factory(cols, rows);
+    // Before any replayed byte. A mode set before the retained output begins is in no byte the
+    // store holds, so a mirror built from the replay alone is in the mode it started in rather than
+    // the one the session was left in (SESSION.md S4-5). Applying it after the paint would draw the
+    // paint in the wrong mode first.
+    if let Some(bytes) = recorded_modes.and_then(crate::modes::apply_bytes_of) {
+        mirror.feed(&bytes);
+    }
     if let Some(generation) = expected_generation {
         let window = key.0.as_deref().unwrap_or("__no-window__");
         if let Some(checkpoint) = checkpoints
@@ -795,6 +823,28 @@ fn remove_session_if_owner(registry: &Registry, key: &PaneKey, session: u64) -> 
     owned
 }
 
+/// Sends this session's mode reports to the owner, off the byte path.
+///
+/// The control socket is shared with observation requests, so recording inside the feed loop would
+/// hold it while a mirror is being fed. A report superseded before it is sent is dropped: the owner
+/// stores the latest, not a history.
+fn start_mode_worker(control: Arc<Mutex<ControlClient>>, session: u64) -> Sender<Vec<u8>> {
+    let (send, receive) = mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name(format!("modes-{session}"))
+        .spawn(move || {
+            while let Ok(report) = receive.recv() {
+                let latest = receive.try_iter().last().unwrap_or(report);
+                let _ = control.lock().unwrap().request(
+                    "pty.modes",
+                    json!({ "session": session, "report": B64.encode(&latest) }),
+                );
+            }
+        })
+        .expect("the mode worker thread starts");
+    send
+}
+
 fn consume_observations(
     mut observations: ObservationStream,
     mirror: SharedMirror,
@@ -803,8 +853,12 @@ fn consume_observations(
     checkpoint: Option<Sender<CheckpointEvent>>,
     frames: Arc<AtomicU64>,
     note: Arc<Mutex<String>>,
+    modes: Option<Sender<Vec<u8>>>,
 ) {
     let session = observations.session();
+    // What was last sent to the owner. A report equal to it is not sent again: the modes reach the
+    // record when they change, not on a cadence.
+    let mut recorded_modes: Option<Vec<u8>> = None;
     *note.lock().unwrap() = String::from("running");
     let exit = loop {
         match observations.next_frame() {
@@ -812,6 +866,18 @@ fn consume_observations(
                 frames.fetch_add(1, Ordering::AcqRel);
                 if !apply_observation(frame, &mirror, &registry, &key, session, checkpoint.as_ref()) {
                     break String::from("apply refused: the registry no longer holds this session");
+                }
+                if let Some(sender) = modes.as_ref() {
+                    let report = {
+                        let held = mirror.lock().unwrap();
+                        crate::modes::report_of(held.modes(), held.alt_active()).encode()
+                    };
+                    if recorded_modes.as_deref() != Some(report.as_slice()) {
+                        if sender.send(report.clone()).is_err() {
+                            break String::from("mode worker ended: the owner records no more modes");
+                        }
+                        recorded_modes = Some(report);
+                    }
                 }
             }
             Ok(None) => break String::from("stream ended: the pty closed the observation connection"),
@@ -1739,7 +1805,7 @@ mod tests {
         let key = (Some("window".to_string()), "pane".to_string());
 
         // The same shell (generation 4): its screen stands back up, at its own cursor.
-        let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4));
+        let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), None);
         restored.lock().unwrap().feed(b"fresh-shell");
         let mut expected = b"archived-screen\n".to_vec();
         expected.extend_from_slice(b"fresh-shell");
@@ -1747,7 +1813,7 @@ mod tests {
 
         // Another generation is another shell. Its old viewport becomes history,
         // then the new shell owns a cleared home cursor instead of inheriting the old one.
-        let fresh = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(5));
+        let fresh = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(5), None);
         fresh.lock().unwrap().feed(b"fresh-shell");
         let mut parked = b"archived-screen\n".to_vec();
         parked.extend_from_slice(&b"\r\n".repeat(24));
@@ -1755,7 +1821,7 @@ mod tests {
         assert_eq!(fresh.lock().unwrap().rehydrate(), parked);
 
         // No expectation asks for nothing.
-        let bare = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, None);
+        let bare = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, None, None);
         assert!(bare.lock().unwrap().rehydrate().is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -1780,6 +1846,47 @@ mod tests {
         assert!(registry.lock().unwrap().contains_key(&key));
         assert!(remove_session_if_owner(&registry, &key, 2));
         assert!(!registry.lock().unwrap().contains_key(&key));
+    }
+
+    #[test]
+    fn a_recorded_mode_report_is_applied_before_any_replayed_byte() {
+        // A mode set before the retained output begins is in no byte the store holds. Applying the
+        // report after the paint would draw the paint in the mode the mirror started in.
+        let home = test_root("checkpoint-modes-");
+        let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [9; 32]).unwrap();
+        store.claim_generation("window", "pane", 4).unwrap();
+        store
+            .write("window", "pane", 4, 20, b"archived-screen\n", &empty_frame(0, 0, false))
+            .unwrap();
+        let key = (Some("window".to_string()), "pane".to_string());
+
+        let report = crate::modes::report_of(
+            crate::mirror::TerminalModes { bracketed_paste: true, ..Default::default() },
+            false,
+        );
+        let stored = report.encode();
+        let mirror =
+            create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), Some(&stored));
+
+        let fed = mirror.lock().unwrap().rehydrate();
+        let applied = report.apply_bytes();
+        assert!(fed.starts_with(&applied), "the modes are fed first");
+        assert_eq!(&fed[applied.len()..], b"archived-screen\n", "then the archived screen");
+    }
+
+    #[test]
+    fn a_report_this_build_cannot_read_leaves_the_replay_alone() {
+        let home = test_root("checkpoint-modes-unreadable-");
+        let store = CheckpointStore::new(&home, "soksak-sidecar-terminal-test", [11; 32]).unwrap();
+        store.claim_generation("window", "pane", 4).unwrap();
+        store
+            .write("window", "pane", 4, 20, b"archived-screen\n", &empty_frame(0, 0, false))
+            .unwrap();
+        let key = (Some("window".to_string()), "pane".to_string());
+
+        let mirror =
+            create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), Some(b"v2 1 0"));
+        assert_eq!(mirror.lock().unwrap().rehydrate(), b"archived-screen\n");
     }
 
     #[test]

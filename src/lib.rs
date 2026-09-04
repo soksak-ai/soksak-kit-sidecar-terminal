@@ -4,6 +4,7 @@ pub mod frame;
 #[cfg(feature = "integration-tests")]
 pub mod integration;
 pub mod mirror;
+pub mod modes;
 pub mod proto;
 pub mod render;
 pub mod runtime;
