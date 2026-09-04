@@ -351,7 +351,7 @@ dependencies = [
 [[package]]
 name = "soksak-contract-terminal"
 version = "0.0.4"
-source = "git+https://github.com/soksak-ai/soksak-contract-terminal?rev=d0b5e4375cf833ea61431079866b518d0e24c416#d0b5e4375cf833ea61431079866b518d0e24c416"
+source = "git+https://github.com/soksak-ai/soksak-contract-terminal?rev=4acb6bc296332daac35cf58c3a846c3b18748301#4acb6bc296332daac35cf58c3a846c3b18748301"
 dependencies = [
  "serde",
  "serde_json",
