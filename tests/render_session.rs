@@ -289,3 +289,26 @@ fn applied_override_frame_updates_surface_theme_state() {
     assert_eq!(state["terminalOverrides"]["foreground"], "#abcdef");
     assert_eq!(state["effectiveTheme"]["foreground"], "#abcdef");
 }
+
+// A dim is what the surface paints, so it is a command on the surface, not a transparency on the
+// layer. Measured 2026-09-04: declared as transparency, the document behind a dimmed surface was on
+// screen through it and the picture that stands in for a parked surface flashed the pane.
+#[test]
+fn a_dim_is_accepted_and_a_bad_amount_is_refused() {
+    let bench = bench("dim");
+    open_and_receive(&bench);
+    bench.sessions.command(
+        "soksak-sidecar-terminal-test",
+        "surface.dim",
+        &json!({"window": "win-test", "pane": "tab-test.1", "dim": 0.5}),
+        None,
+    ).expect("a dim is accepted");
+
+    for bad in [json!({"window": "win-test", "pane": "tab-test.1", "dim": 1.5}),
+                json!({"window": "win-test", "pane": "tab-test.1"})] {
+        assert!(
+            bench.sessions.command("soksak-sidecar-terminal-test", "surface.dim", &bad, None).is_err(),
+            "an amount outside 0..1, or none at all, is refused",
+        );
+    }
+}

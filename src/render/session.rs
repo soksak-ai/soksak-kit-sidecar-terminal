@@ -64,6 +64,10 @@ struct PaneControl {
     cursor_interval_ms: AtomicU64,
     cursor_phase: AtomicU8,
     theme: Mutex<SurfaceThemeState>,
+    /// Light taken off what this pane paints, in thousandths. A dim belongs to the surface's own
+    /// pixels: declared as transparency instead, the document behind the surface is on screen
+    /// through it (SPEC surface.dim).
+    dim_per_mille: AtomicU64,
     selection: Mutex<soksak_contract_surface::SelectionSnapshot>,
     modes: Mutex<crate::mirror::TerminalModes>,
 }
@@ -298,6 +302,7 @@ impl SurfaceSessions {
             "surface.read" => self.read(request, wiring),
             "surface.close" => self.close(request),
             "surface.theme" => self.theme(request),
+            "surface.dim" => self.dim(request),
             "surface.selection" => self.selection(request, wiring),
             "surface.hover" => {
                 Err(refuse("NOT_YET_SERVED", "surface.hover arrives with the overlay pass"))
@@ -498,6 +503,7 @@ impl SurfaceSessions {
             cursor_blinking: AtomicBool::new(false),
             cursor_interval_ms: AtomicU64::new(0),
             cursor_phase: AtomicU8::new(0),
+            dim_per_mille: AtomicU64::new(0),
             theme: Mutex::new(theme.clone()),
             selection: Mutex::new(inactive_selection_snapshot()),
             modes: Mutex::new(crate::mirror::TerminalModes::default()),
@@ -555,6 +561,32 @@ impl SurfaceSessions {
         }
         control.wake();
         Ok(json!({}))
+    }
+
+    fn dim(&self, request: &Value) -> Result<Value, SurfaceError> {
+        let held = request
+            .as_object()
+            .ok_or_else(|| refuse("INVALID_PARAMS", "surface.dim takes an object"))?;
+        let mut fields = serde_json::Map::new();
+        for (key, value) in held {
+            fields.insert(key.clone(), value.clone());
+        }
+        let dim = fields
+            .get("dim")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| refuse("INVALID_PARAMS", "surface.dim dim is required"))?;
+        if !(0.0..=1.0).contains(&dim) {
+            return Err(refuse("INVALID_PARAMS", "surface.dim dim must be between 0 and 1"));
+        }
+        let pane = self.pane_of(request)?;
+        let control = self.control_of(&pane)?;
+        let next = (dim * 1000.0).round() as u64;
+        if control.dim_per_mille.swap(next, Ordering::AcqRel) == next {
+            return self.state(request);
+        }
+        control.dirty.store(true, Ordering::Release);
+        control.wake();
+        self.state(request)
     }
 
     fn theme(&self, request: &Value) -> Result<Value, SurfaceError> {
@@ -1051,6 +1083,7 @@ fn spawn_render_thread(
                 awaiting_grid = false;
                 let base_palette = control.theme.lock().unwrap().base.clone();
                 painter.set_base_palette(base_palette);
+                painter.set_dim(control.dim_per_mille.load(Ordering::Acquire) as f64 / 1000.0);
                 let (offset, preedit) = {
                     let overlay = control.overlay.lock().unwrap();
                     (overlay.offset, overlay.preedit.clone())
@@ -1323,6 +1356,7 @@ mod tests {
             cursor_blinking: AtomicBool::new(false),
             cursor_interval_ms: AtomicU64::new(0),
             cursor_phase: AtomicU8::new(0),
+            dim_per_mille: AtomicU64::new(0),
             theme: Mutex::new(test_theme()),
             selection: Mutex::new(inactive_selection_snapshot()),
             modes: Mutex::new(crate::mirror::TerminalModes::default()),

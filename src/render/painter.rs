@@ -84,6 +84,15 @@ pub struct Painter {
     rows: u16,
     cells: Vec<GpuCell>,
     hashes: Vec<Option<u64>>,
+    /// How much light is taken off what this surface paints, 0 to 1.
+    ///
+    /// A dim belongs to the surface's own pixels. Declared as transparency instead, the document
+    /// behind the surface is on screen through it — and the picture that stands in for a parked
+    /// surface is drawn in that document (SPEC surface.dim).
+    dim: f32,
+    /// Bumped when the dim changes, and folded into every row hash: a row painted with one amount
+    /// and hashed without it would keep that amount when the amount changes.
+    dim_revision: u64,
 }
 
 impl Painter {
@@ -110,6 +119,8 @@ impl Painter {
             base_palette: palette.clone(),
             palette,
             palette_revision: 0,
+            dim: 0.0,
+            dim_revision: 0,
             family: family.to_string(),
             pt,
             scale,
@@ -146,6 +157,18 @@ impl Painter {
         self.base_palette = palette;
     }
 
+    /// Takes light off every pixel this surface paints. A change owes every row: it changes them
+    /// all, and a row left with its old hash would keep the amount it was painted with.
+    pub fn set_dim(&mut self, dim: f64) {
+        let next = dim.clamp(0.0, 1.0) as f32;
+        if (next - self.dim).abs() < f32::EPSILON {
+            return;
+        }
+        self.dim = next;
+        self.dim_revision = self.dim_revision.wrapping_add(1);
+        self.invalidate();
+    }
+
     /// Fold the mirror's viewport into the instance grid. `offset` scrolls
     /// into history; the cursor paints only at the bottom (offset 0) and only
     /// while the mirror shows it.
@@ -173,6 +196,7 @@ impl Painter {
             let selection = mirror.selection_range(line);
             let mut hash = row_hash(&cells);
             hash ^= self.palette_revision.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            hash ^= self.dim_revision.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
             let preedit_here =
                 preedit.is_some() && offset == 0 && cursor.0 == row as usize;
             let cursor_here = show_cursor && cursor.0 == row as usize && !preedit_here;
@@ -352,10 +376,29 @@ impl Painter {
                 }
             }
         }
+        if self.dim > 0.0 {
+            // Every colour, once, where the row is written. A cell's colours are decided by the
+            // palette, by direct RGB, by the selection and by the cursor; taking the light off here
+            // is the one place that covers all of them.
+            for instance in &mut instances {
+                instance.fg = darken(instance.fg, self.dim);
+                instance.bg = darken(instance.bg, self.dim);
+            }
+        }
         let base = row as usize * self.cols as usize;
         self.cells[base..base + self.cols as usize].copy_from_slice(&instances);
         Ok(())
     }
+}
+
+/// Takes `dim` of the light off a packed BGRA colour, leaving its alpha alone.
+fn darken(color: u32, dim: f32) -> u32 {
+    let keep = 1.0 - dim;
+    let scale = |shift: u32| {
+        let channel = ((color >> shift) & 0xFF) as f32;
+        ((channel * keep).round().clamp(0.0, 255.0) as u32) << shift
+    };
+    (color & 0xFF00_0000) | scale(16) | scale(8) | scale(0)
 }
 
 fn background_only(palette: &Palette) -> GpuCell {

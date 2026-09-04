@@ -172,3 +172,39 @@ fn preedit_paints_underlined_at_the_cursor_and_leaves_when_cleared() {
     let after = canvas_read(&painter, &surface);
     assert_eq!(ink_in_cells(&after, width, cell, 0..8, 0), 0, "the blank row returns");
 }
+
+// A dim takes light off what the surface paints.
+//
+// It was declared as transparency instead, so the document behind a dimmed surface was on screen
+// through it: the picture that stands in for a parked surface brightened the pane by
+// 0.5×(191−127) for two frames while it was staged under one, and taking the surface off before
+// that picture was drawn darkened it for two more (measured 2026-09-04).
+#[test]
+fn a_dim_darkens_every_pixel_the_surface_paints() {
+    let (mut painter, surface, mut state) = painter(8, 2);
+    let mirror = GridMirror::from_rows(8, &["AB      ", "        "]);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let lit = canvas_read(&painter, &surface);
+
+    painter.set_dim(0.5);
+    let dirty = paint(&mut painter, &surface, &mut state, &mirror);
+    assert_eq!(dirty, vec![0, 1], "a dim owes every row: it changes every pixel");
+    let dimmed = canvas_read(&painter, &surface);
+
+    let sum = |pixels: &[u8]| pixels.iter().map(|byte| u64::from(*byte)).sum::<u64>();
+    assert!(sum(&dimmed) < sum(&lit), "the dimmed surface is darker than the lit one");
+
+    painter.set_dim(0.0);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    assert_eq!(canvas_read(&painter, &surface), lit, "no dim paints what it painted before");
+}
+
+#[test]
+fn a_dim_that_did_not_change_owes_no_row() {
+    let (mut painter, surface, mut state) = painter(8, 2);
+    let mirror = GridMirror::from_rows(8, &["AB      ", "        "]);
+    painter.set_dim(0.4);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    painter.set_dim(0.4);
+    assert!(paint(&mut painter, &surface, &mut state, &mirror).is_empty(), "nothing changed");
+}

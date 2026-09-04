@@ -341,7 +341,7 @@ dependencies = [
 [[package]]
 name = "soksak-contract-surface"
 version = "0.0.9"
-source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=f3c3b22#f3c3b22f780850cb222e5eeb862eff59518766eb"
+source = "git+https://github.com/soksak-ai/soksak-contract-surface?rev=dcccf07fff8ccbb8822d9128b5ea23b536401c4d#dcccf07fff8ccbb8822d9128b5ea23b536401c4d"
 dependencies = [
  "base64",
  "serde",
