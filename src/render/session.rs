@@ -377,6 +377,9 @@ impl SurfaceSessions {
             "lastError": control.last_error.lock().unwrap().clone(),
             "signalSequence": signal_seq,
             "paused": control.paused.load(Ordering::Acquire),
+            // What this pane paints with. Read from outside, so a pane drawn bright where the
+            // application decided a dim is a measured fact and not a guess about which side lost it.
+            "dim": control.dim_per_mille.load(Ordering::Acquire) as f64 / 1000.0,
             "focused": control.focused.load(Ordering::Acquire),
             "cursorPresentation": if control.focused.load(Ordering::Acquire) { "engine" } else { "hollow-block" },
             "stopped": control.stop.load(Ordering::Acquire),

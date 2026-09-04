@@ -303,6 +303,13 @@ fn a_dim_is_accepted_and_a_bad_amount_is_refused() {
         &json!({"window": "win-test", "pane": "tab-test.1", "dim": 0.5}),
         None,
     ).expect("a dim is accepted");
+    let state = bench.sessions.command(
+        "soksak-sidecar-terminal-test",
+        "surface.state",
+        &json!({"pane": "tab-test.1"}),
+        None,
+    ).expect("state answers");
+    assert_eq!(state["dim"], 0.5, "the state reports the amount the pane paints with");
 
     for bad in [json!({"window": "win-test", "pane": "tab-test.1", "dim": 1.5}),
                 json!({"window": "win-test", "pane": "tab-test.1"})] {
