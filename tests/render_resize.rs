@@ -31,3 +31,20 @@ fn a_new_pixel_box_answers_a_new_grid_and_three_new_rights() {
         assert!(!old_ports.contains(port), "a rebuilt ring never reuses an old right");
     }
 }
+
+/// The ring is the box the application handed over, in device pixels — not the whole cells
+/// that fit in it. A ring sized to whole cells left a strip of the document behind the surface
+/// on screen, a different width on every card (measured 2026-09-05 in a three-pane window).
+#[test]
+fn the_surfaces_are_the_box_handed_over_and_not_the_whole_cells_in_it() {
+    let canvas = Arc::new(Canvas::create().expect("a Metal device exists on this host"));
+    let (painter, _ring, (cols, rows)) =
+        prepare_render(&canvas, "Menlo", 13.0, 2.0, 237.0, 468.0, palette()).expect("builds");
+    let (cell_w, cell_h) = painter.cell_size();
+    let (width, height) = painter.pixel_size();
+    assert_eq!((width, height), (474, 936), "the surface is the box, in device pixels");
+    assert!(
+        width > cols as u32 * cell_w as u32 && height > rows as u32 * cell_h as u32,
+        "this box is not a whole number of cells: {cols}x{rows} cells of {cell_w}x{cell_h}",
+    );
+}

@@ -82,6 +82,10 @@ pub struct Painter {
     cell_h: u16,
     cols: u16,
     rows: u16,
+    /// The box the application handed over, in device pixels: what the ring is sized to and
+    /// what gets painted. Never less than the grid; rarely a whole number of cells.
+    box_w: u32,
+    box_h: u32,
     cells: Vec<GpuCell>,
     hashes: Vec<Option<u64>>,
     /// How much light is taken off what this surface paints, 0 to 1.
@@ -129,6 +133,8 @@ impl Painter {
             cell_h,
             cols,
             rows,
+            box_w: cols as u32 * cell_w as u32,
+            box_h: rows as u32 * cell_h as u32,
             cells: vec![GpuCell::default(); cols as usize * rows as usize],
             hashes: vec![None; rows as usize],
         })
@@ -146,11 +152,17 @@ impl Painter {
         &self.canvas
     }
 
+    /// The surface size: the box the application handed over, never less than the grid.
     pub fn pixel_size(&self) -> (u32, u32) {
-        (
-            self.cols as u32 * self.cell_w as u32,
-            self.rows as u32 * self.cell_h as u32,
-        )
+        (self.box_w, self.box_h)
+    }
+
+    /// The box the application handed over, in device pixels. The grid is what fits in it and
+    /// the surface is all of it: a ring sized to whole cells left a strip of the document behind
+    /// the surface on screen, a different width on every card (measured 2026-09-05).
+    pub fn set_box(&mut self, width: u32, height: u32) {
+        self.box_w = width.max(self.cols as u32 * self.cell_w as u32);
+        self.box_h = height.max(self.rows as u32 * self.cell_h as u32);
     }
 
     pub fn set_base_palette(&mut self, palette: Palette) {
@@ -273,6 +285,7 @@ impl Painter {
                 self.cell_h,
                 start,
                 end - start + 1,
+                darken(self.palette.bg, self.dim),
             )?;
             index += 1;
         }

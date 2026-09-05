@@ -232,6 +232,7 @@ mod darwin_paint {
             cell_h: u32,
             row_start: u32,
             row_count: u32,
+            bg: u32,
         ) -> c_int;
         pub(super) fn soksak_canvas_surface_read(
             surface: *mut RawSurface,
@@ -341,7 +342,9 @@ impl Canvas {
         Ok(Surface { raw, width, height })
     }
 
-    /// Paint rows [row_start, row_start + row_count) of the instance grid.
+    /// Paint rows [row_start, row_start + row_count) of the instance grid, and the part of the
+    /// surface no cell covers with `bg`: the box the application handed over is rarely a whole
+    /// number of cells, and the strip left over is this side's to paint.
     #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &self,
@@ -354,6 +357,7 @@ impl Canvas {
         cell_h: u16,
         row_start: u16,
         row_count: u16,
+        bg: u32,
     ) -> Result<(), String> {
         if cells.len() != cols as usize * rows as usize {
             return Err("PAINT_GRID_MISMATCH: the instance buffer is not cols x rows".to_string());
@@ -370,6 +374,7 @@ impl Canvas {
                 cell_h as u32,
                 row_start as u32,
                 row_count as u32,
+                bg,
             )
         };
         if code != 0 {

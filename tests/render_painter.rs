@@ -208,3 +208,29 @@ fn a_dim_that_did_not_change_owes_no_row() {
     painter.set_dim(0.4);
     assert!(paint(&mut painter, &surface, &mut state, &mirror).is_empty(), "nothing changed");
 }
+
+/// The application hands the sidecar a pixel box and the grid is what fits in it; the box is
+/// rarely a whole number of cells. What is left over is the sidecar's to paint too — it owns the
+/// pixels — and a strip it leaves untouched shows whatever is behind the surface. Measured
+/// 2026-09-05 in a three-pane window: each card's right edge showed a strip of a different
+/// width, the document behind the surface, dimmed where the surface was not.
+#[test]
+fn a_target_larger_than_the_grid_is_painted_to_its_edge_with_the_background() {
+    let (mut painter, _grid_sized, mut state) = painter(8, 2);
+    let (grid_w, grid_h) = painter.pixel_size();
+    let (width, height) = (grid_w + 11, grid_h + 7);
+    let surface = painter.canvas().surface(width, height).expect("a wider target allocates");
+    let mirror = GridMirror::from_rows(8, &["AB      ", "        "]);
+    paint(&mut painter, &surface, &mut state, &mirror);
+    let pixels = canvas_read(&painter, &surface);
+    let bg = pack_bgra(10, 10, 10, 255).to_le_bytes();
+    let at = |x: u32, y: u32| -> [u8; 4] {
+        let offset = ((y * width + x) * 4) as usize;
+        [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]]
+    };
+    // The strip right of the last column, on a painted row and on the row below the grid.
+    assert_eq!(at(grid_w + 5, 3), bg, "the strip right of the grid is background");
+    assert_eq!(at(width - 1, grid_h / 2), bg, "the last pixel column is background");
+    assert_eq!(at(2, grid_h + 3), bg, "the strip below the grid is background");
+    assert_eq!(at(width - 1, height - 1), bg, "the far corner is background");
+}

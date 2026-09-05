@@ -68,6 +68,14 @@ tracking. Every live tracking fact can select the engine-owned wheel-report rout
 routing is press-only, while highlight routing admits press and release for provider-native
 encoding.
 
+The surfaces of a pane's ring are the box the application handed over, in whole device pixels.
+The cell is the font's advance rounded up to whole device pixels — the size the painter steps by
+— and the grid is what fits of that cell in the box; `cellW`/`cellH` in every answer are that
+cell. What no cell covers, right of the last column and below the last row, is painted with the
+background the cells are painted with, dimmed as they are. A ring sized to whole cells left a
+strip of the document behind the surface on screen, a different width on every card, and a grid
+counted in the fractional advance ran past the box by up to a column (measured 2026-09-05).
+
 Native wheel input keeps pixel/line/page units until this Kit normalizes them against the pane's
 measured cell box. Fractional pixel deltas stay in a per-pane accumulator. Shift forces local
 scrollback; otherwise current engine modes choose mouse report, alternate scroll or scrollback.

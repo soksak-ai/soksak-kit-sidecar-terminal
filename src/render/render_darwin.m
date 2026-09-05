@@ -475,7 +475,7 @@ static NSString *const kCellShader = @""
     "using namespace metal;\n"
     "struct Cell { ushort gx, gy, gw, gh; short inkL, inkT;\n"
     "              uint fg, bg, flags, link, reserved; };\n"
-    "struct Params { uint cols; uint cellW; uint cellH; uint rowStart; uint rowCount; };\n"
+    "struct Params { uint cols; uint cellW; uint cellH; uint rowStart; uint rowCount; uint rows; uint bg; };\n"
     "static float4 unpackColor(uint value) {\n"
     "    return float4(float((value >> 16) & 255u), float((value >> 8) & 255u),\n"
     "                  float(value & 255u), float((value >> 24) & 255u)) / 255.0;\n"
@@ -485,9 +485,15 @@ static NSString *const kCellShader = @""
     "                       const device Cell *cells [[buffer(0)]],\n"
     "                       constant Params &p [[buffer(1)]],\n"
     "                       uint2 gid [[thread_position_in_grid]]) {\n"
-    "    if (gid.x >= p.cols * p.cellW || gid.y >= p.rowCount * p.cellH) { return; }\n"
     "    uint absY = p.rowStart * p.cellH + gid.y;\n"
     "    if (gid.x >= out.get_width() || absY >= out.get_height()) { return; }\n"
+    "    // The box is rarely a whole number of cells. What is right of the last column and below\n"
+    "    // the last row is the surface's too, painted with the background it paints cells with.\n"
+    "    if (gid.x >= p.cols * p.cellW || absY >= p.rows * p.cellH) {\n"
+    "        out.write(unpackColor(p.bg), uint2(gid.x, absY));\n"
+    "        return;\n"
+    "    }\n"
+    "    if (gid.y >= p.rowCount * p.cellH) { return; }\n"
     "    uint cx = gid.x / p.cellW;\n"
     "    uint cy = p.rowStart + gid.y / p.cellH;\n"
     "    Cell cell = cells[cy * p.cols + cx];\n"
@@ -514,11 +520,13 @@ typedef struct {
     uint32_t cellH;
     uint32_t rowStart;
     uint32_t rowCount;
+    uint32_t rows;
+    uint32_t bg;
 } SoksakPaintParams;
 
 int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurface *surface,
                             const void *cells, uint32_t cols, uint32_t rows, uint32_t cellW,
-                            uint32_t cellH, uint32_t rowStart, uint32_t rowCount) {
+                            uint32_t cellH, uint32_t rowStart, uint32_t rowCount, uint32_t bg) {
     if (canvas == NULL || atlas == NULL || surface == NULL || cells == NULL) {
         return -1;
     }
@@ -536,8 +544,16 @@ int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurf
                                        options:MTLResourceStorageModeShared];
         SoksakPaintParams params = {
             .cols = cols, .cellW = cellW, .cellH = cellH, .rowStart = rowStart,
-            .rowCount = rowCount,
+            .rowCount = rowCount, .rows = rows, .bg = bg,
         };
+        // Every pass paints the strip right of the grid for its rows; the pass that reaches the
+        // last row paints the strip below the grid as well. The surface is the box the
+        // application handed over, and the box is rarely a whole number of cells.
+        uint32_t dispatchW = surface->width;
+        uint32_t dispatchH = rowCount * cellH;
+        if (rowStart + rowCount == rows && surface->height > rowStart * cellH) {
+            dispatchH = surface->height - rowStart * cellH;
+        }
         id<MTLBuffer> paramsBuffer = [canvas->device newBufferWithBytes:&params
                                                                  length:sizeof(params)
                                                                 options:MTLResourceStorageModeShared];
@@ -554,7 +570,7 @@ int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurf
         [encoder setTexture:atlas->texture atIndex:1];
         [encoder setBuffer:cellBuffer offset:0 atIndex:0];
         [encoder setBuffer:paramsBuffer offset:0 atIndex:1];
-        [encoder dispatchThreads:MTLSizeMake(cols * cellW, rowCount * cellH, 1)
+        [encoder dispatchThreads:MTLSizeMake(dispatchW, dispatchH, 1)
             threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
         [encoder endEncoding];
         [commands commit];

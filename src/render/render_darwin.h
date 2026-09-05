@@ -49,11 +49,13 @@ SoksakSurface *soksak_canvas_surface_create(SoksakCanvas *canvas, uint32_t width
                                             uint32_t height);
 void soksak_canvas_surface_free(SoksakSurface *surface);
 
-// Paint rows [rowStart, rowStart+rowCount) of the cell grid into the surface.
-// `cells` is cols × rows 32-byte instances. Blocks until the pass completes.
+// Paint rows [rowStart, rowStart+rowCount) of the cell grid into the surface, and the part of
+// the surface no cell covers — right of the last column for those rows, below the last row when
+// the range reaches it — with `bg`. `cells` is cols × rows 32-byte instances. Blocks until the
+// pass completes.
 int32_t soksak_canvas_paint(SoksakCanvas *canvas, SoksakAtlas *atlas, SoksakSurface *surface,
                             const void *cells, uint32_t cols, uint32_t rows, uint32_t cellW,
-                            uint32_t cellH, uint32_t rowStart, uint32_t rowCount);
+                            uint32_t cellH, uint32_t rowStart, uint32_t rowCount, uint32_t bg);
 
 // Copy the surface pixels out, BGRA rows tightly packed (width × 4 bytes each).
 int32_t soksak_canvas_surface_read(SoksakSurface *surface, uint8_t *bgra, uint64_t cap);

@@ -318,11 +318,10 @@ impl SurfaceSessions {
         let metrics = canvas
             .font_metrics(&request.font.family, request.font.pt, request.scale)
             .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
-        let (cols, rows) = grid_for(
-            request.pixel_w, request.pixel_h, request.scale, metrics.cell_w, metrics.cell_h,
-        );
+        let (cell_w, cell_h) = painted_cell(&metrics);
+        let (cols, rows) = grid_for(request.pixel_w, request.pixel_h, request.scale, cell_w, cell_h);
         serde_json::to_value(soksak_contract_surface::MeasureResult {
-            cols, rows, cell_w: metrics.cell_w, cell_h: metrics.cell_h,
+            cols, rows, cell_w, cell_h,
         }).map_err(|error| refuse("MEASURE_STATE_INVALID", error.to_string()))
     }
 
@@ -449,11 +448,10 @@ impl SurfaceSessions {
         let metrics = canvas
             .font_metrics(family, pt, scale)
             .map_err(|error| refuse("FONT_UNAVAILABLE", error))?;
-        let (cols, rows) = grid_for(pixel_w, pixel_h, scale, metrics.cell_w, metrics.cell_h);
-        let cell_w = metrics.cell_w.ceil() as u32;
-        let cell_h = metrics.cell_h.ceil() as u32;
+        let (cell_w, cell_h) = painted_cell(&metrics);
+        let (cols, rows) = grid_for(pixel_w, pixel_h, scale, cell_w, cell_h);
 
-        let painter = Painter::new(
+        let mut painter = Painter::new(
             Arc::clone(&canvas),
             family,
             pt,
@@ -463,18 +461,20 @@ impl SurfaceSessions {
             palette.clone(),
         )
         .map_err(|error| refuse("PAINTER_UNAVAILABLE", error))?;
-        let ring = SurfaceRing::new(&canvas, cols as u32 * cell_w, rows as u32 * cell_h, rows)
+        painter.set_box(device_px(pixel_w, scale), device_px(pixel_h, scale));
+        let (box_w, box_h) = painter.pixel_size();
+        let ring = SurfaceRing::new(&canvas, box_w, box_h, rows)
             .map_err(|error| refuse("RING_UNAVAILABLE", error))?;
         let ports = ring.mach_ports().map_err(|error| refuse("RING_PORTS_UNAVAILABLE", error))?;
         channel
             .send(
                 &Message::Ring {
                     pane: pane.clone(),
-                    pixel_w: cols as u32 * cell_w,
-                    pixel_h: rows as u32 * cell_h,
+                    pixel_w: box_w,
+                    pixel_h: box_h,
                     scale,
-                    cell_w: metrics.cell_w,
-                    cell_h: metrics.cell_h,
+                    cell_w,
+                    cell_h,
                 },
                 &ports,
             )
@@ -487,8 +487,8 @@ impl SurfaceSessions {
             focused: AtomicBool::new(true),
             dirty: AtomicBool::new(true),
             overlay: Mutex::new(OverlayState {
-                cell_css_w: metrics.cell_w / scale,
-                cell_css_h: metrics.cell_h / scale,
+                cell_css_w: cell_w / scale,
+                cell_css_h: cell_h / scale,
                 page_rows: rows,
                 ..OverlayState::default()
             }),
@@ -517,7 +517,7 @@ impl SurfaceSessions {
             .unwrap()
             .insert(pane.clone(), FontChoice { family: family.to_string(), pt, palette: palette.clone() });
         spawn_render_thread(control, mirror, painter, ring, channel);
-        Ok(json!({ "cols": cols, "rows": rows, "cellW": metrics.cell_w, "cellH": metrics.cell_h }))
+        Ok(json!({ "cols": cols, "rows": rows, "cellW": cell_w, "cellH": cell_h }))
     }
 
     fn resize(&self, request: &Value) -> Result<Value, SurfaceError> {
@@ -920,6 +920,15 @@ fn number(value: &Value, key: &str) -> Result<f64, SurfaceError> {
         .ok_or_else(|| refuse("INVALID_PARAMS", format!("{key} is required")))
 }
 
+/// The cell as it is painted: the font's advance rounded up to whole device pixels, which is
+/// the size the painter and the kernel step by. The grid is counted in this cell, and the
+/// application is told this cell. Counted in the fractional advance instead, a box held one
+/// column more than it could paint, and the painted grid ran past the box by up to a column
+/// (measured 2026-09-05: 30 columns of 16 in a box of 474).
+fn painted_cell(metrics: &super::native::FontMetrics) -> (f64, f64) {
+    (metrics.cell_w.ceil(), metrics.cell_h.ceil())
+}
+
 fn grid_for(pixel_w: f64, pixel_h: f64, scale: f64, cell_w: f64, cell_h: f64) -> (u16, u16) {
     let device_w = pixel_w * scale;
     let device_h = pixel_h * scale;
@@ -990,12 +999,18 @@ pub fn prepare_render(
     palette: Palette,
 ) -> Result<(Painter, SurfaceRing, (u16, u16)), String> {
     let metrics = canvas.font_metrics(family, pt, scale)?;
-    let (cols, rows) = grid_for(pixel_w, pixel_h, scale, metrics.cell_w, metrics.cell_h);
-    let cell_w = metrics.cell_w.ceil() as u32;
-    let cell_h = metrics.cell_h.ceil() as u32;
-    let painter = Painter::new(Arc::clone(canvas), family, pt, scale, cols, rows, palette)?;
-    let ring = SurfaceRing::new(canvas, cols as u32 * cell_w, rows as u32 * cell_h, rows)?;
+    let (cell_w, cell_h) = painted_cell(&metrics);
+    let (cols, rows) = grid_for(pixel_w, pixel_h, scale, cell_w, cell_h);
+    let mut painter = Painter::new(Arc::clone(canvas), family, pt, scale, cols, rows, palette)?;
+    painter.set_box(device_px(pixel_w, scale), device_px(pixel_h, scale));
+    let (box_w, box_h) = painter.pixel_size();
+    let ring = SurfaceRing::new(canvas, box_w, box_h, rows)?;
     Ok((painter, ring, (cols, rows)))
+}
+
+/// A CSS-pixel length in device pixels, whole; a box of nothing is one pixel.
+fn device_px(css: f64, scale: f64) -> u32 {
+    ((css * scale).round() as i64).max(1) as u32
 }
 
 fn spawn_render_thread(
