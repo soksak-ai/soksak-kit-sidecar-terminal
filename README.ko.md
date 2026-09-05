@@ -21,10 +21,14 @@ Live handoff snapshot은 mirror paint와 절대 PTY output sequence를 원자적
 Checkpoint commit은 pane마다 thread와 process 전체에서 직렬화합니다. `(generation, sequence)`는
 증가만 하므로 오래된 background write가 최신 explicit archive를 덮지 않습니다. Reader는 원자적으로
 이름이 바뀐 최종 파일만 읽고 기록 중인 파일은 읽지 않습니다.
-새 PTY generation은 live output을 적용하기 전에 archive를 engine에 재생해 이전 화면을 scrollback으로
-보존합니다. Fresh shell이 archive의 visible row를 덮거나 이전 cursor를 물려받지 않도록 live output
-전에 viewport 하나를 전진시키고 새 viewport를 지운 뒤 cursor를 home으로 옮깁니다. 살아 있는 generation에
-다시 붙을 때는 archive를 재생하지 않습니다.
+새 PTY generation은 이전 화면을 checkpoint에서 scrollback으로 복원합니다. archive paint를 넣고,
+viewport 하나를 전진시키고, 새 viewport를 지운 뒤 cursor를 home으로 옮깁니다 — fresh shell이 archive의
+visible row를 덮거나 이전 cursor를 물려받지 않도록 live output 전에 끝냅니다. 그다음 PTY는 retained ring을
+세션의 첫 output으로 재생하는데, 이 ring은 checkpoint가 이미 담고 있는 같은 dead shell의 내용이고,
+캡처된 폭에 맞춰 배치된 byte stream입니다. 다른 폭의 grid에 넣으면 wrap된 prompt padding이 계단이 되고
+resize가 그 계단을 더 벌립니다. 그래서 cross-generation 복원에서는 첫 output(retained 재생)을 버리고
+coordinate만 이어받은 뒤 그 뒤의 live output만 그립니다. 살아 있는 generation에 다시 붙을 때는 아무것도
+버리지 않고 ring을 재생합니다 — 그때는 폭이 일치하고 재생이 그 세션 자신의 live 따라잡기이기 때문입니다.
 `terminal.frame`은 viewport를 run 단위로, 해당 mirror가 실제 적용한 절대 출력 순서와 같은 lock에서
 게시하므로 호출자가 요청 좌표로 렌더 진행을 추정하지 않습니다. `subscriber`마다 처음에는 전체
 화면을, 이후에는 바뀐 행만 받습니다. 크기 변경·offset 변경·alternate screen 전환은 다시 전체

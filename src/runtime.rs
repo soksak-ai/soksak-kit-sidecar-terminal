@@ -36,6 +36,14 @@ struct SessionState {
     pane: String,
     mirror: SharedMirror,
     mirror_output_sequence: Arc<AtomicU64>,
+    // The next output observation is the pty's replay of a dead shell's retained ring, and this
+    // session's screen was already restored from the structured checkpoint. The retained ring is a
+    // byte stream laid out for the widths it was captured at; fed into a grid of any other width its
+    // wrapped prompt padding staircases, and a resize reflows the staircase wider (measured
+    // 2026-09-05). The checkpoint is width-independent, so the replay is dropped and only live output
+    // after it is drawn. Set only on a cross-generation checkpoint restore; a same-shell reattach and
+    // a fresh session both draw their replay.
+    drop_stale_replay: bool,
     source_event_sequence: u64,
     source_output_sequence: u64,
     gaps: u64,
@@ -59,6 +67,7 @@ fn new_session_state(
     mirror: SharedMirror,
     cols: u16,
     rows: u16,
+    drop_stale_replay: bool,
 ) -> SessionState {
     let start = observation.start_output_sequence();
     SessionState {
@@ -68,6 +77,7 @@ fn new_session_state(
         pane: info.pane_id,
         mirror,
         mirror_output_sequence: Arc::new(AtomicU64::new(start)),
+        drop_stale_replay,
         source_event_sequence: observation.start_event_sequence(),
         source_output_sequence: start,
         gaps: 0,
@@ -208,7 +218,7 @@ impl Runtime {
         let observation = ObservationStream::subscribe(&self.runtime_root, info.session)?;
         self.claim_checkpoint_generation(&key, info.generation)?;
         let recorded = self.recorded_modes(info.session);
-        let mirror = create_session_mirror(
+        let (mirror, drop_stale_replay) = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
             &key,
@@ -219,7 +229,7 @@ impl Runtime {
         );
         self.registry.lock().unwrap().insert(
             key.clone(),
-            new_session_state(info, &observation, mirror.clone(), cols, rows),
+            new_session_state(info, &observation, mirror.clone(), cols, rows, drop_stale_replay),
         );
         self.start_consumer(observation, mirror, key);
         Ok(true)
@@ -337,7 +347,7 @@ impl Runtime {
         let key = (info.window_label.clone(), info.pane_id.clone());
         self.claim_checkpoint_generation(&key, info.generation)?;
         let recorded = self.recorded_modes(info.session);
-        let fresh = create_session_mirror(
+        let (fresh, drop_stale_replay) = create_session_mirror(
             self.factory,
             self.checkpoints.as_deref(),
             &key,
@@ -363,7 +373,8 @@ impl Runtime {
                 None => (fresh, false),
             }
         };
-        let mut state = new_session_state(info, &observation, mirror.clone(), cols, rows);
+        let mut state =
+            new_session_state(info, &observation, mirror.clone(), cols, rows, drop_stale_replay);
         if previous {
             let registry = self.registry.lock().unwrap();
             if let Some(old) = registry.get(&key) {
@@ -689,8 +700,11 @@ fn create_session_mirror(
     rows: u16,
     expected_generation: Option<u64>,
     recorded_modes: Option<&[u8]>,
-) -> SharedMirror {
+) -> (SharedMirror, bool) {
     let mut mirror = factory(cols, rows);
+    // Whether the pty's coming retained replay is a dead shell's history this restore has already
+    // drawn from the checkpoint.
+    let mut drop_stale_replay = false;
     // Before any replayed byte. A mode set before the retained output begins is in no byte the
     // store holds, so a mirror built from the replay alone is in the mode it started in rather than
     // the one the session was left in (SESSION.md S4-5). Applying it after the paint would draw the
@@ -713,10 +727,14 @@ fn create_session_mirror(
                 // the new viewport before its first live output arrives.
                 mirror.feed(&b"\r\n".repeat(rows as usize));
                 mirror.feed(b"\x1b[2J\x1b[H");
+                // The checkpoint is this dead shell's screen. The pty will replay the same content as
+                // a byte ring; drawing it into the cleared viewport would restage the width-coupled
+                // padding the checkpoint just replaced.
+                drop_stale_replay = true;
             }
         }
     }
-    Arc::new(Mutex::new(mirror))
+    (Arc::new(Mutex::new(mirror)), drop_stale_replay)
 }
 
 fn frame_timeout_ms(request: &Value) -> u64 {
@@ -905,19 +923,25 @@ fn apply_observation(
         } => {
             let byte_count = bytes.len() as u64;
             let byte_sha256 = format!("{:x}", Sha256::digest(&bytes));
-            let mirror_output_sequence = {
-                let states = registry.lock().unwrap();
-                let Some(state) = states.get(key) else {
+            let (mirror_output_sequence, drop_stale_replay) = {
+                let mut states = registry.lock().unwrap();
+                let Some(state) = states.get_mut(key) else {
                     return false;
                 };
                 if state.session != session {
                     return false;
                 }
-                state.mirror_output_sequence.clone()
+                // The pty's first output on a cross-generation restore is the dead shell's retained
+                // ring. The screen is already restored from the checkpoint, so this replay is dropped
+                // rather than restaged at the wrong width; every later output is live and drawn.
+                let drop = std::mem::take(&mut state.drop_stale_replay);
+                (state.mirror_output_sequence.clone(), drop)
             };
             let (alt_active, suppressed_replies) = {
                 let mut mirror = mirror.lock().unwrap();
-                mirror.feed(&bytes);
+                if !drop_stale_replay {
+                    mirror.feed(&bytes);
+                }
                 mirror_output_sequence.store(through_sequence, Ordering::Release);
                 (mirror.alt_active(), mirror.suppressed_replies())
             };
@@ -1444,6 +1468,7 @@ mod tests {
             pane: key.1.clone(),
             mirror: mirror_b,
             mirror_output_sequence: Arc::new(AtomicU64::new(0)),
+            drop_stale_replay: false,
             source_event_sequence: 0,
             source_output_sequence: 0,
             gaps: 0,
@@ -1761,6 +1786,7 @@ mod tests {
                 pane: key.1.clone(),
                 mirror: mirror.clone(),
                 mirror_output_sequence: progress,
+                drop_stale_replay: false,
                 source_event_sequence: 0,
                 source_output_sequence: 0,
                 gaps: 0,
@@ -1805,7 +1831,7 @@ mod tests {
         let key = (Some("window".to_string()), "pane".to_string());
 
         // The same shell (generation 4): its screen stands back up, at its own cursor.
-        let restored = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), None);
+        let (restored, _) = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), None);
         restored.lock().unwrap().feed(b"fresh-shell");
         let mut expected = b"archived-screen\n".to_vec();
         expected.extend_from_slice(b"fresh-shell");
@@ -1813,7 +1839,7 @@ mod tests {
 
         // Another generation is another shell. Its old viewport becomes history,
         // then the new shell owns a cleared home cursor instead of inheriting the old one.
-        let fresh = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(5), None);
+        let (fresh, _) = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(5), None);
         fresh.lock().unwrap().feed(b"fresh-shell");
         let mut parked = b"archived-screen\n".to_vec();
         parked.extend_from_slice(&b"\r\n".repeat(24));
@@ -1821,7 +1847,7 @@ mod tests {
         assert_eq!(fresh.lock().unwrap().rehydrate(), parked);
 
         // No expectation asks for nothing.
-        let bare = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, None, None);
+        let (bare, _) = create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, None, None);
         assert!(bare.lock().unwrap().rehydrate().is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -1866,7 +1892,7 @@ mod tests {
         );
         let stored = report.encode();
         let mirror =
-            create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), Some(&stored));
+            create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), Some(&stored)).0;
 
         let fed = mirror.lock().unwrap().rehydrate();
         let applied = report.apply_bytes();
@@ -1885,8 +1911,57 @@ mod tests {
         let key = (Some("window".to_string()), "pane".to_string());
 
         let mirror =
-            create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), Some(b"v2 1 0"));
+            create_session_mirror(paint_mirror, Some(&store), &key, 80, 24, Some(4), Some(b"v2 1 0")).0;
         assert_eq!(mirror.lock().unwrap().rehydrate(), b"archived-screen\n");
+    }
+
+    #[test]
+    fn a_cross_generation_restore_drops_the_stale_replay_and_draws_only_live_output() {
+        // The pty replays a dead shell's retained ring as the first output. On a cross-generation
+        // restore the screen is already the checkpoint's, so that replay is a width-coupled duplicate
+        // and is dropped; the live output that follows is drawn. Measured 2026-09-05: fed into the
+        // grid it staircased and a resize reflowed the staircase wider.
+        let mirror: SharedMirror = Arc::new(Mutex::new(Box::new(PaintMirror { paint: Vec::new() })));
+        let progress = Arc::new(AtomicU64::new(0));
+        let (key, registry) = test_registry(&mirror, progress.clone(), (1, 1));
+        registry.lock().unwrap().get_mut(&key).unwrap().drop_stale_replay = true;
+
+        // The retained replay: dropped, but its coordinate is taken up.
+        assert!(apply_observation(
+            ObservationFrame::Output {
+                event_sequence: 1,
+                from_sequence: 0,
+                through_sequence: 40,
+                bytes: b"\x1b[1m\x1b[7m%\x1b[27m\x1b[0m                    \r stale-prompt".to_vec(),
+            },
+            &mirror,
+            &registry,
+            &key,
+            1,
+            None,
+        ));
+        assert!(mirror.lock().unwrap().rehydrate().is_empty(), "the stale replay was drawn");
+        assert_eq!(progress.load(Ordering::Acquire), 40, "the replay coordinate was not taken up");
+        assert!(
+            !registry.lock().unwrap().get(&key).unwrap().drop_stale_replay,
+            "the drop flag outlived the one replay it is for",
+        );
+
+        // Live output after it is drawn.
+        assert!(apply_observation(
+            ObservationFrame::Output {
+                event_sequence: 2,
+                from_sequence: 40,
+                through_sequence: 51,
+                bytes: b"live-prompt".to_vec(),
+            },
+            &mirror,
+            &registry,
+            &key,
+            1,
+            None,
+        ));
+        assert_eq!(mirror.lock().unwrap().rehydrate(), b"live-prompt");
     }
 
     #[test]
